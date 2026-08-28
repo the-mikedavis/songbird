@@ -2,8 +2,13 @@
 
 use std::{
     borrow::Cow,
+    fmt,
     num::{NonZeroU16, NonZeroU32},
 };
+
+use bytes::BufMut;
+
+use crate::codec::Encode;
 
 macro_rules! wire_code {
     (
@@ -97,11 +102,25 @@ impl ResponseCode {
     }
 }
 
+impl Encode for ResponseCode {
+    fn encode(&self, buf: &mut impl BufMut) {
+        buf.put_u16(self.0);
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CodeResponse(ResponseCode);
 
-pub type Offset = u64;
-pub type ChunkId = u64;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Offset(pub u64);
+
+impl Encode for Offset {
+    fn encode(&self, buf: &mut impl BufMut) {
+        buf.put_u64(self.0);
+    }
+}
+
+pub type ChunkId = Offset;
 
 pub type CorrelationId = u32;
 
@@ -137,13 +156,45 @@ pub trait Request: Command {
 
 pub trait Notification: Command {}
 
-/// NOTE: Max 256 characters.
-pub type PublisherReference = String;
+#[derive(Debug, Clone, Copy)]
+pub struct ReferenceTooLongError(usize);
+
+impl fmt::Display for ReferenceTooLongError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_fmt(format_args!(
+            "reference too long, expected 256 bytes or less, got {}",
+            self.0
+        ))
+    }
+}
+
+impl std::error::Error for ReferenceTooLongError {}
+
+/// A string of max 256 bytes.
+pub struct Reference(String);
+
+impl Reference {
+    pub fn new(value: impl Into<String>) -> Result<Self, ReferenceTooLongError> {
+        let inner = value.into();
+        if inner.len() > 256 {
+            Err(ReferenceTooLongError(inner.len()))
+        } else {
+            Ok(Self(inner))
+        }
+    }
+}
+
+impl Encode for Reference {
+    fn encode(&self, buf: &mut impl BufMut) {
+        self.0.as_str().encode(buf)
+    }
+}
 
 // DeclarePublisher
 
 pub struct DeclarePublisher<'a> {
-    pub publisher_reference: PublisherReference,
+    pub id: PublisherId,
+    pub reference: &'a Reference,
     pub stream: &'a str,
 }
 
@@ -155,10 +206,33 @@ impl Request for DeclarePublisher<'_> {
     type Response = CodeResponse;
 }
 
+impl Encode for DeclarePublisher<'_> {
+    fn encode(&self, buf: &mut impl BufMut) {
+        self.id.encode(buf);
+        self.reference.encode(buf);
+        self.stream.encode(buf);
+    }
+}
+
 // Publish
 
-pub type PublisherId = u8;
-pub type PublishingId = u64;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublisherId(pub u8);
+
+impl Encode for PublisherId {
+    fn encode(&self, buf: &mut impl BufMut) {
+        buf.put_u8(self.0);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublishingId(pub u64);
+
+impl Encode for PublishingId {
+    fn encode(&self, buf: &mut impl BufMut) {
+        buf.put_u64(self.0);
+    }
+}
 
 pub struct PublishedMessage {
     pub id: PublishingId,
@@ -230,7 +304,7 @@ impl Notification for PublishError {}
 // QueryPublisherSequence
 
 pub struct QueryPublisherSequence<'a> {
-    pub publisher_reference: PublisherReference,
+    pub reference: &'a Reference,
     pub stream: &'a str,
 }
 
@@ -253,24 +327,45 @@ impl Request for QueryPublisherSequence<'_> {
     type Response = QueryPublisherResponse;
 }
 
+impl Encode for QueryPublisherSequence<'_> {
+    fn encode(&self, buf: &mut impl BufMut) {
+        self.reference.encode(buf);
+        self.stream.encode(buf);
+    }
+}
+
 // DeletePublisher
 
-pub struct DeletePublisherRequest {
+pub struct DeletePublisher {
     pub publisher_id: PublisherId,
 }
 
-impl Command for DeletePublisherRequest {
+impl Command for DeletePublisher {
     const KEY: u16 = 0x0006;
 }
 
-impl Request for DeletePublisherRequest {
+impl Request for DeletePublisher {
     type Response = CodeResponse;
+}
+
+impl Encode for DeletePublisher {
+    fn encode(&self, buf: &mut impl BufMut) {
+        self.publisher_id.encode(buf);
+    }
 }
 
 // Subscribe
 
-pub type SubscriptionId = u8;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubscriptionId(pub u8);
 
+impl Encode for SubscriptionId {
+    fn encode(&self, buf: &mut impl BufMut) {
+        buf.put_u8(self.0);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OffsetSpecification {
     First,
     Last,
@@ -279,15 +374,32 @@ pub enum OffsetSpecification {
     Timestamp(i64),
 }
 
+impl Encode for OffsetSpecification {
+    fn encode(&self, buf: &mut impl BufMut) {
+        match self {
+            Self::First => buf.put_u16(1),
+            Self::Last => buf.put_u16(2),
+            Self::Next => buf.put_u16(3),
+            Self::Offset(offset) => {
+                buf.put_u16(4);
+                buf.put_u64(*offset);
+            }
+            Self::Timestamp(ts) => {
+                buf.put_u16(5);
+                buf.put_i64(*ts)
+            }
+        }
+    }
+}
+
 pub struct Subscribe<'a> {
-    pub correlation_id: CorrelationId,
     pub subscription_id: SubscriptionId,
     pub stream: &'a str,
     pub offset_specification: OffsetSpecification,
     pub credit: u16,
     // See supported properties in doc. Might make sense to have a stronger
     // type here.
-    pub properties: Vec<(String, String)>,
+    pub properties: &'a [(&'a str, &'a str)],
 }
 
 impl Command for Subscribe<'_> {
@@ -296,6 +408,22 @@ impl Command for Subscribe<'_> {
 
 impl Request for Subscribe<'_> {
     type Response = CodeResponse;
+}
+
+impl Encode for Subscribe<'_> {
+    fn encode(&self, buf: &mut impl BufMut) {
+        self.subscription_id.encode(buf);
+        self.stream.encode(buf);
+        self.offset_specification.encode(buf);
+        buf.put_u16(self.credit);
+        if !self.properties.is_empty() {
+            buf.put_u32(self.properties.len() as u32);
+            for (k, v) in self.properties {
+                k.encode(buf);
+                v.encode(buf);
+            }
+        }
+    }
 }
 
 // Deliver
@@ -374,22 +502,34 @@ impl Request for Credit {
     type Response = CreditResponse;
 }
 
+impl Encode for Credit {
+    fn encode(&self, buf: &mut impl BufMut) {
+        self.subscription_id.encode(buf);
+        buf.put_u16(self.credit);
+    }
+}
+
 // StoreOffset
 
-/// Max 256 bytes.
-pub type Reference = String;
-
-pub struct StoreOffset {
-    pub reference: Reference,
-    pub stream: String,
+pub struct StoreOffset<'a> {
+    pub reference: &'a Reference,
+    pub stream: &'a str,
     pub offset: Offset,
 }
 
-impl Command for StoreOffset {
+impl Command for StoreOffset<'_> {
     const KEY: u16 = 0x000a;
 }
 
-impl Notification for StoreOffset {}
+impl Notification for StoreOffset<'_> {}
+
+impl Encode for StoreOffset<'_> {
+    fn encode(&self, buf: &mut impl BufMut) {
+        self.reference.encode(buf);
+        self.stream.encode(buf);
+        self.offset.encode(buf);
+    }
+}
 
 // QueryOffset
 
@@ -417,6 +557,13 @@ impl Request for QueryOffset<'_> {
     type Response = QueryOffsetResponse;
 }
 
+impl Encode for QueryOffset<'_> {
+    fn encode(&self, buf: &mut impl BufMut) {
+        self.reference.encode(buf);
+        self.stream.encode(buf);
+    }
+}
+
 // Unsubscribe
 
 pub struct Unsubscribe {
@@ -429,6 +576,12 @@ impl Command for Unsubscribe {
 
 impl Request for Unsubscribe {
     type Response = CodeResponse;
+}
+
+impl Encode for Unsubscribe {
+    fn encode(&self, buf: &mut impl BufMut) {
+        self.subscription_id.encode(buf);
+    }
 }
 
 // Create
@@ -446,6 +599,13 @@ impl Request for Create<'_> {
     type Response = CodeResponse;
 }
 
+impl Encode for Create<'_> {
+    fn encode(&self, buf: &mut impl BufMut) {
+        self.stream.encode(buf);
+        self.arguments.encode(buf);
+    }
+}
+
 // Delete
 
 pub struct Delete<'a> {
@@ -460,10 +620,16 @@ impl Request for Delete<'_> {
     type Response = CodeResponse;
 }
 
+impl Encode for Delete<'_> {
+    fn encode(&self, buf: &mut impl BufMut) {
+        self.stream.encode(buf);
+    }
+}
+
 // Metadata
 
 pub struct MetadataQuery<'a> {
-    pub stream: &'a [&'a str],
+    pub streams: &'a [&'a str],
 }
 
 impl Command for MetadataQuery<'_> {
@@ -504,6 +670,12 @@ impl Request for MetadataQuery<'_> {
     type Response = MetadataResponse;
 }
 
+impl Encode for MetadataQuery<'_> {
+    fn encode(&self, buf: &mut impl BufMut) {
+        self.streams.encode(buf);
+    }
+}
+
 // MetadataUpdate
 
 pub struct MetadataUpdate {
@@ -542,6 +714,12 @@ impl Request for PeerProperties<'_> {
     type Response = PeerPropertiesResponse;
 }
 
+impl Encode for PeerProperties<'_> {
+    fn encode(&self, buf: &mut impl BufMut) {
+        self.properties.encode(buf);
+    }
+}
+
 // SaslHandshake
 
 pub struct SaslHandshake;
@@ -565,6 +743,11 @@ impl Request for SaslHandshake {
     type Response = SaslHandshakeResponse;
 }
 
+impl Encode for SaslHandshake {
+    // Nothing to do.
+    fn encode(&self, _buf: &mut impl BufMut) {}
+}
+
 // SaslAuthenticate
 
 pub struct Mechanism<'a>(pub &'a str);
@@ -577,7 +760,7 @@ impl Mechanism<'_> {
 
 pub struct SaslAuthenticate<'a> {
     pub mechanism: Mechanism<'a>,
-    pub opaque_data: &'a [u8],
+    pub opaque_data: Option<&'a [u8]>,
 }
 
 impl Command for SaslAuthenticate<'_> {
@@ -599,6 +782,19 @@ impl Request for SaslAuthenticate<'_> {
     type Response = SaslAuthenticateResponse;
 }
 
+impl Encode for SaslAuthenticate<'_> {
+    fn encode(&self, buf: &mut impl BufMut) {
+        self.mechanism.0.encode(buf);
+        match self.opaque_data.as_ref() {
+            Some(data) => {
+                buf.put_u32(data.len() as u32);
+                buf.put_slice(data);
+            }
+            None => buf.put_i32(-1),
+        }
+    }
+}
+
 // Tune
 
 pub struct Tune {
@@ -614,6 +810,13 @@ impl Command for Tune {
 
 impl Request for Tune {
     type Response = Tune;
+}
+
+impl Encode for Tune {
+    fn encode(&self, buf: &mut impl BufMut) {
+        buf.put_u32(self.frame_max.map(NonZeroU32::get).unwrap_or(0));
+        buf.put_u32(self.heartbeat.map(NonZeroU32::get).unwrap_or(0));
+    }
 }
 
 // Open
@@ -641,6 +844,12 @@ impl Request for Open<'_> {
     type Response = OpenResponse;
 }
 
+impl Encode for Open<'_> {
+    fn encode(&self, buf: &mut impl BufMut) {
+        self.virtual_host.encode(buf)
+    }
+}
+
 // Close
 
 pub struct Close<'a> {
@@ -657,6 +866,13 @@ impl Request for Close<'_> {
     type Response = CodeResponse;
 }
 
+impl Encode for Close<'_> {
+    fn encode(&self, buf: &mut impl BufMut) {
+        self.code.encode(buf);
+        self.reason.as_ref().encode(buf);
+    }
+}
+
 // Heartbeat
 
 pub struct Heartbeat;
@@ -666,6 +882,11 @@ impl Command for Heartbeat {
 }
 
 impl Notification for Heartbeat {}
+
+impl Encode for Heartbeat {
+    // Nothing to do.
+    fn encode(&self, _buf: &mut impl BufMut) {}
+}
 
 // Route
 
@@ -693,6 +914,13 @@ impl Request for Route<'_> {
     type Response = RouteResponse;
 }
 
+impl Encode for Route<'_> {
+    fn encode(&self, buf: &mut impl BufMut) {
+        self.routing_key.encode(buf);
+        self.super_stream.encode(buf);
+    }
+}
+
 // Partitions
 
 pub struct Partitions<'a> {
@@ -718,6 +946,12 @@ impl Request for Partitions<'_> {
     type Response = PartitionsResponse;
 }
 
+impl Encode for Partitions<'_> {
+    fn encode(&self, buf: &mut impl BufMut) {
+        self.super_stream.encode(buf);
+    }
+}
+
 // ConsumerUpdate
 
 pub struct ConsumerUpdate {
@@ -732,7 +966,7 @@ impl Command for ConsumerUpdate {
 
 pub struct ConsumerUpdateResponse {
     pub code: ResponseCode,
-    pub offset_specification: OffsetSpecification,
+    pub offset_specification: Option<OffsetSpecification>,
 }
 
 // ExchangeCommandVersions
@@ -742,6 +976,14 @@ pub struct CommandVersions {
     pub key: u16,
     pub min_version: u16,
     pub max_version: u16,
+}
+
+impl Encode for CommandVersions {
+    fn encode(&self, buf: &mut impl BufMut) {
+        buf.put_u16(self.key);
+        buf.put_u16(self.min_version);
+        buf.put_u16(self.max_version);
+    }
 }
 
 pub struct CommandVersionsExchange<'a> {
@@ -767,7 +1009,13 @@ impl Request for CommandVersionsExchange<'_> {
     type Response = CommandVersionsExchangeResponse;
 }
 
-// StreamStats TODO
+impl Encode for CommandVersionsExchange<'_> {
+    fn encode(&self, buf: &mut impl BufMut) {
+        self.commands.encode(buf);
+    }
+}
+
+// StreamStats
 
 pub struct StreamStats<'a> {
     pub stream: &'a str,
@@ -792,6 +1040,12 @@ impl Request for StreamStats<'_> {
     type Response = StreamStatsResponse;
 }
 
+impl Encode for StreamStats<'_> {
+    fn encode(&self, buf: &mut impl BufMut) {
+        self.stream.encode(buf);
+    }
+}
+
 // CreateSuperStream
 
 pub struct CreateSuperStream<'a> {
@@ -809,6 +1063,15 @@ impl Request for CreateSuperStream<'_> {
     type Response = CodeResponse;
 }
 
+impl Encode for CreateSuperStream<'_> {
+    fn encode(&self, buf: &mut impl BufMut) {
+        self.name.encode(buf);
+        self.partitions.encode(buf);
+        self.binding_keys.encode(buf);
+        self.arguments.encode(buf);
+    }
+}
+
 // DeleteSuperStream
 
 pub struct DeleteSuperStream<'a> {
@@ -821,6 +1084,12 @@ impl Command for DeleteSuperStream<'_> {
 
 impl Request for DeleteSuperStream<'_> {
     type Response = CodeResponse;
+}
+
+impl Encode for DeleteSuperStream<'_> {
+    fn encode(&self, buf: &mut impl BufMut) {
+        self.name.encode(buf);
+    }
 }
 
 // ResolveOffsetSpec
@@ -849,4 +1118,12 @@ impl Status for ResolveOffsetSpecResponse {
 
 impl Request for ResolveOffsetSpec<'_> {
     type Response = ResolveOffsetSpecResponse;
+}
+
+impl Encode for ResolveOffsetSpec<'_> {
+    fn encode(&self, buf: &mut impl BufMut) {
+        self.stream.encode(buf);
+        self.offset_specification.encode(buf);
+        self.properties.encode(buf);
+    }
 }
