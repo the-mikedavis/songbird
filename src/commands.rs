@@ -6,9 +6,9 @@ use std::{
     num::{NonZeroU16, NonZeroU32},
 };
 
-use bytes::BufMut;
+use bytes::{BufMut, Bytes};
 
-use crate::codec::Encode;
+use crate::codec::{Decode, DecodeError, Encode, Reader};
 
 macro_rules! wire_code {
     (
@@ -108,6 +108,12 @@ impl Encode for ResponseCode {
     }
 }
 
+impl Decode for ResponseCode {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        reader.u16().map(Self)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CodeResponse(ResponseCode);
 
@@ -120,9 +126,13 @@ impl Encode for Offset {
     }
 }
 
-pub type ChunkId = Offset;
+impl Decode for Offset {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        reader.decode().map(Self)
+    }
+}
 
-pub type CorrelationId = u32;
+pub type ChunkId = Offset;
 
 pub trait Command {
     const KEY: u16;
@@ -190,6 +200,12 @@ impl Encode for Reference {
     }
 }
 
+impl Decode for Reference {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Self::new(reader.str()?).map_err(|err| DecodeError::Custom(err.into()))
+    }
+}
+
 // DeclarePublisher
 
 pub struct DeclarePublisher<'a> {
@@ -225,12 +241,24 @@ impl Encode for PublisherId {
     }
 }
 
+impl Decode for PublisherId {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        reader.u8().map(Self)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PublishingId(pub u64);
 
 impl Encode for PublishingId {
     fn encode(&self, buf: &mut impl BufMut) {
         buf.put_u64(self.0);
+    }
+}
+
+impl Decode for PublishingId {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        reader.decode().map(Self)
     }
 }
 
@@ -283,11 +311,29 @@ impl Command for PublishConfirm {
 
 impl Notification for PublishConfirm {}
 
+impl Decode for PublishConfirm {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            publisher_id: reader.decode()?,
+            publishing_ids: reader.decode()?,
+        })
+    }
+}
+
 // PublishError
 
 pub struct PublishingError {
     pub publishing_id: PublishingId,
     pub code: ResponseCode,
+}
+
+impl Decode for PublishingError {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            publishing_id: PublishingId::decode(reader)?,
+            code: ResponseCode::decode(reader)?,
+        })
+    }
 }
 
 pub struct PublishError {
@@ -300,6 +346,15 @@ impl Command for PublishError {
 }
 
 impl Notification for PublishError {}
+
+impl Decode for PublishError {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            publisher_id: reader.decode()?,
+            errors: reader.decode()?,
+        })
+    }
+}
 
 // QueryPublisherSequence
 
@@ -334,6 +389,15 @@ impl Encode for QueryPublisherSequence<'_> {
     }
 }
 
+impl Decode for QueryPublisherResponse {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            code: reader.decode()?,
+            sequence: reader.decode()?,
+        })
+    }
+}
+
 // DeletePublisher
 
 pub struct DeletePublisher {
@@ -362,6 +426,12 @@ pub struct SubscriptionId(pub u8);
 impl Encode for SubscriptionId {
     fn encode(&self, buf: &mut impl BufMut) {
         buf.put_u8(self.0);
+    }
+}
+
+impl Decode for SubscriptionId {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        reader.u8().map(Self)
     }
 }
 
@@ -509,6 +579,15 @@ impl Encode for Credit {
     }
 }
 
+impl Decode for CreditResponse {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            code: reader.decode()?,
+            subscription_id: reader.decode()?,
+        })
+    }
+}
+
 // StoreOffset
 
 pub struct StoreOffset<'a> {
@@ -561,6 +640,22 @@ impl Encode for QueryOffset<'_> {
     fn encode(&self, buf: &mut impl BufMut) {
         self.reference.encode(buf);
         self.stream.encode(buf);
+    }
+}
+
+impl Decode for QueryOffsetResponse {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let code = reader.decode()?;
+        // Server always responds with the encoding for an offset spec, but
+        // only returns offsets.
+        let offset_spec_type = reader.u16()?;
+        if offset_spec_type != 4 {
+            return Err(DecodeError::Malformed);
+        }
+        Ok(Self {
+            code,
+            offset: reader.decode()?,
+        })
     }
 }
 
@@ -648,10 +743,34 @@ impl NonMaxU16 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BrokerRef(NonMaxU16);
 
+impl Decode for BrokerRef {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        NonMaxU16::new(reader.u16()?)
+            .map(BrokerRef)
+            .ok_or(DecodeError::Malformed)
+    }
+}
+
+impl Decode for Option<BrokerRef> {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(NonMaxU16::new(reader.u16()?).map(BrokerRef))
+    }
+}
+
 pub struct Broker {
     pub reference: BrokerRef,
     pub host: String,
     pub port: u32,
+}
+
+impl Decode for Broker {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            reference: reader.decode()?,
+            host: reader.decode()?,
+            port: reader.u32()?,
+        })
+    }
 }
 
 pub struct StreamMetadata {
@@ -659,6 +778,17 @@ pub struct StreamMetadata {
     pub code: ResponseCode,
     pub leader: Option<BrokerRef>,
     pub replicas: Vec<BrokerRef>,
+}
+
+impl Decode for StreamMetadata {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            name: reader.decode()?,
+            code: reader.decode()?,
+            leader: reader.decode()?,
+            replicas: reader.decode()?,
+        })
+    }
 }
 
 pub struct MetadataResponse {
@@ -676,6 +806,15 @@ impl Encode for MetadataQuery<'_> {
     }
 }
 
+impl Decode for MetadataResponse {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            brokers: reader.decode()?,
+            streams: reader.decode()?,
+        })
+    }
+}
+
 // MetadataUpdate
 
 pub struct MetadataUpdate {
@@ -688,6 +827,15 @@ impl Command for MetadataUpdate {
 }
 
 impl Notification for MetadataUpdate {}
+
+impl Decode for MetadataUpdate {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            code: reader.decode()?,
+            stream: reader.decode()?,
+        })
+    }
+}
 
 // PeerProperties
 
@@ -720,6 +868,15 @@ impl Encode for PeerProperties<'_> {
     }
 }
 
+impl Decode for PeerPropertiesResponse {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            code: reader.decode()?,
+            properties: reader.decode()?,
+        })
+    }
+}
+
 // SaslHandshake
 
 pub struct SaslHandshake;
@@ -748,6 +905,15 @@ impl Encode for SaslHandshake {
     fn encode(&self, _buf: &mut impl BufMut) {}
 }
 
+impl Decode for SaslHandshakeResponse {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            code: reader.decode()?,
+            mechanisms: reader.decode()?,
+        })
+    }
+}
+
 // SaslAuthenticate
 
 pub struct Mechanism<'a>(pub &'a str);
@@ -769,7 +935,7 @@ impl Command for SaslAuthenticate<'_> {
 
 pub struct SaslAuthenticateResponse {
     pub code: ResponseCode,
-    pub opaque_data: Vec<u8>,
+    pub challenge: Option<Bytes>,
 }
 
 impl Status for SaslAuthenticateResponse {
@@ -795,6 +961,18 @@ impl Encode for SaslAuthenticate<'_> {
     }
 }
 
+impl Decode for SaslAuthenticateResponse {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let code = reader.decode()?;
+        let challenge = if reader.is_empty() {
+            None
+        } else {
+            Some(reader.decode()?)
+        };
+        Ok(Self { code, challenge })
+    }
+}
+
 // Tune
 
 pub struct Tune {
@@ -816,6 +994,15 @@ impl Encode for Tune {
     fn encode(&self, buf: &mut impl BufMut) {
         buf.put_u32(self.frame_max.map(NonZeroU32::get).unwrap_or(0));
         buf.put_u32(self.heartbeat.map(NonZeroU32::get).unwrap_or(0));
+    }
+}
+
+impl Decode for Tune {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            frame_max: NonZeroU32::new(reader.u32()?),
+            heartbeat: NonZeroU32::new(reader.u32()?),
+        })
     }
 }
 
@@ -850,6 +1037,23 @@ impl Encode for Open<'_> {
     }
 }
 
+impl Decode for OpenResponse {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let code = reader.decode()?;
+        // NOTE: this is an important check. The server will not include the properties map if
+        // the result is not OK.
+        let connection_properties = if reader.is_empty() {
+            Vec::new()
+        } else {
+            reader.decode()?
+        };
+        Ok(Self {
+            code,
+            connection_properties,
+        })
+    }
+}
+
 // Close
 
 pub struct Close<'a> {
@@ -873,6 +1077,15 @@ impl Encode for Close<'_> {
     }
 }
 
+impl Decode for Close<'static> {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            code: reader.decode()?,
+            reason: Cow::Owned(reader.decode()?),
+        })
+    }
+}
+
 // Heartbeat
 
 pub struct Heartbeat;
@@ -886,6 +1099,12 @@ impl Notification for Heartbeat {}
 impl Encode for Heartbeat {
     // Nothing to do.
     fn encode(&self, _buf: &mut impl BufMut) {}
+}
+
+impl Decode for Heartbeat {
+    fn decode(_reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self)
+    }
 }
 
 // Route
@@ -921,6 +1140,15 @@ impl Encode for Route<'_> {
     }
 }
 
+impl Decode for RouteResponse {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            code: reader.decode()?,
+            streams: reader.decode()?,
+        })
+    }
+}
+
 // Partitions
 
 pub struct Partitions<'a> {
@@ -949,6 +1177,15 @@ impl Request for Partitions<'_> {
 impl Encode for Partitions<'_> {
     fn encode(&self, buf: &mut impl BufMut) {
         self.super_stream.encode(buf);
+    }
+}
+
+impl Decode for PartitionsResponse {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            code: reader.decode()?,
+            streams: reader.decode()?,
+        })
     }
 }
 
@@ -986,6 +1223,16 @@ impl Encode for CommandVersions {
     }
 }
 
+impl Decode for CommandVersions {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            key: reader.u16()?,
+            min_version: reader.u16()?,
+            max_version: reader.u16()?,
+        })
+    }
+}
+
 pub struct CommandVersionsExchange<'a> {
     pub commands: &'a [CommandVersions],
 }
@@ -1012,6 +1259,15 @@ impl Request for CommandVersionsExchange<'_> {
 impl Encode for CommandVersionsExchange<'_> {
     fn encode(&self, buf: &mut impl BufMut) {
         self.commands.encode(buf);
+    }
+}
+
+impl Decode for CommandVersionsExchangeResponse {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            code: reader.decode()?,
+            commands: reader.decode()?,
+        })
     }
 }
 
@@ -1043,6 +1299,15 @@ impl Request for StreamStats<'_> {
 impl Encode for StreamStats<'_> {
     fn encode(&self, buf: &mut impl BufMut) {
         self.stream.encode(buf);
+    }
+}
+
+impl Decode for StreamStatsResponse {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            code: reader.decode()?,
+            stats: reader.decode()?,
+        })
     }
 }
 
@@ -1125,5 +1390,14 @@ impl Encode for ResolveOffsetSpec<'_> {
         self.stream.encode(buf);
         self.offset_specification.encode(buf);
         self.properties.encode(buf);
+    }
+}
+
+impl Decode for ResolveOffsetSpecResponse {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            code: reader.decode()?,
+            offset: reader.decode()?,
+        })
     }
 }
