@@ -234,7 +234,7 @@ impl Publisher {
             .into_iter()
             .enumerate()
             .map(|(i, body)| commands::PublishedMessage {
-                id: commands::PublishingId(first + i as u64),
+                id: first + i as u64,
                 body,
             })
             .collect();

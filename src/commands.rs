@@ -9,7 +9,7 @@ use std::{
 use bytes::{BufMut, Bytes};
 
 use crate::{
-    Reference,
+    PublishingId, Reference,
     codec::{Decode, DecodeError, Encode, Reader},
 };
 
@@ -280,21 +280,6 @@ impl Decode for PublisherId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PublishingId(pub u64);
-
-impl Encode for PublishingId {
-    fn encode(&self, buf: &mut impl BufMut) {
-        buf.put_u64(self.0);
-    }
-}
-
-impl Decode for PublishingId {
-    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
-        reader.decode().map(Self)
-    }
-}
-
 pub struct PublishedMessage {
     pub id: PublishingId,
     pub body: Bytes,
@@ -302,7 +287,7 @@ pub struct PublishedMessage {
 
 impl Encode for PublishedMessage {
     fn encode(&self, buf: &mut impl BufMut) {
-        self.id.encode(buf);
+        buf.put_u64(self.id);
         self.body.encode(buf);
     }
 }
@@ -333,7 +318,7 @@ pub struct FilteredMessage {
 
 impl Encode for FilteredMessage {
     fn encode(&self, buf: &mut impl BufMut) {
-        self.id.encode(buf);
+        buf.put_u64(self.id);
         match &self.filter_value {
             Some(filter) => filter.as_str().encode(buf),
             None => buf.put_i16(-1),
@@ -392,8 +377,8 @@ pub struct PublishingError {
 impl Decode for PublishingError {
     fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
         Ok(Self {
-            publishing_id: PublishingId::decode(reader)?,
-            code: ResponseCode::decode(reader)?,
+            publishing_id: reader.decode()?,
+            code: reader.decode()?,
         })
     }
 }
@@ -431,7 +416,7 @@ impl Command for QueryPublisherSequence<'_> {
 
 pub struct QueryPublisherResponse {
     pub code: ResponseCode,
-    pub sequence: u64,
+    pub sequence: PublishingId,
 }
 
 impl Status for QueryPublisherResponse {

@@ -94,12 +94,14 @@ impl Deref for Reference {
     }
 }
 
+pub type PublishingId = u64;
+
 pub enum PublishOutcome {
-    Confirmed(Vec<u64>),
+    Confirmed(Vec<PublishingId>),
     Failed(Vec<PublishFailure>),
 }
 
 pub struct PublishFailure {
-    pub publishing_id: u64,
+    pub publishing_id: PublishingId,
     pub code: ResponseCode,
 }
