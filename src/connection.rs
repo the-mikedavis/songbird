@@ -16,20 +16,31 @@ use tokio::sync::{mpsc, oneshot};
 use crate::{
     PublishOutcome,
     codec::{Decode, DecodeError, Encode, Reader},
-    commands::{self, Command, Notification, Reference, Request, ResponseCode, Status as _},
+    commands::{
+        self, Command, CommandKey, Notification, Reference, Request, ResponseCode, Status as _,
+    },
 };
-
-// TODO: newtype for CommandKey
 
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
     Io(std::io::Error),
-    Decode { command: u16, source: DecodeError },
-    // #[error("{command:?} was refused: {code:?}")]
-    Refused { command: u16, code: ResponseCode },
-    FrameTooLarge { size: usize, frame_max: u32 },
-    ClosedByPeer { code: ResponseCode, reason: String },
+    Decode {
+        command: CommandKey,
+        source: DecodeError,
+    },
+    Refused {
+        command: CommandKey,
+        code: ResponseCode,
+    },
+    FrameTooLarge {
+        size: usize,
+        frame_max: u32,
+    },
+    ClosedByPeer {
+        code: ResponseCode,
+        reason: String,
+    },
     Closed,
     // #[error("no SASL mechanism in common; the server offers {offered:?}")]
     // NoCommonMechanism { offered: Vec<String> },
@@ -226,7 +237,7 @@ impl Connection {
         C: Command + Encode,
     {
         let mut buf = BytesMut::with_capacity(64);
-        buf.put_u16(C::KEY);
+        C::KEY.encode(&mut buf);
         buf.put_u16(C::VERSION);
         if let Some(CorrelationId(id)) = correlation {
             buf.put_u32(id);
@@ -339,7 +350,7 @@ impl Connection {
     }
 }
 
-fn check(command: u16, code: ResponseCode) -> Result<(), Error> {
+fn check(command: CommandKey, code: ResponseCode) -> Result<(), Error> {
     if code.is_ok() {
         Ok(())
     } else {

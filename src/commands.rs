@@ -14,91 +14,68 @@ macro_rules! wire_code {
     (
         $(#[$meta:meta])*
         $vis:vis struct $name:ident($repr:ty);
-        $(
-            $(#[$kmeta:meta])*
-            ($konst:ident, $value:expr, $phrase:expr);
-        )+
+        $( ($konst:ident, $value:expr); )+
     ) => {
         $(#[$meta])*
         #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
         $vis struct $name($repr);
 
         impl $name {
-            $(
-                $(#[$kmeta])*
-                pub const $konst: Self = Self($value);
-            )+
+            $( pub const $konst: Self = Self($value); )+
 
-            /// The underlying wire value.
-            pub const fn get(self) -> $repr {
-                self.0
-            }
+            pub const fn get(self) -> $repr { self.0 }
 
-            /// The spec name for this value, or `None` if the peer sent an unknown one.
-            pub fn name(self) -> Option<&'static str> {
+            pub fn raw_name(self) -> Option<&'static str> {
                 match self {
-                    $( Self::$konst => Some($phrase), )+
+                    $( Self::$konst => Some(stringify!($konst)), )+
                     _ => None,
                 }
             }
         }
 
-        impl From<$repr> for $name {
-            fn from(value: $repr) -> Self {
-                Self(value)
-            }
-        }
-
-        impl From<$name> for $repr {
-            fn from(value: $name) -> Self {
-                value.0
-            }
-        }
-
-        impl core::fmt::Debug for $name {
-            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                match self.name() {
-                    Some(name) => f.write_str(name),
-                    None => write!(f, concat!(stringify!($name), "({:#x})"), self.0),
-                }
-            }
-        }
+        impl From<$repr> for $name { fn from(v: $repr) -> Self { Self(v) } }
+        impl From<$name> for $repr { fn from(v: $name) -> Self { v.0 } }
     };
 }
 
 wire_code! {
     pub struct ResponseCode(u16);
 
-    (OK,                                   0x01, "OK");
-    (STREAM_DOES_NOT_EXIST,                0x02, "Stream does not exist");
-    (SUBSCRIPTION_ID_EXISTS,               0x03, "Subscription ID already exists");
-    (SUBSCRIPTION_ID_DOES_NOT_EXIST,       0x04, "Subscription ID does not exist");
-    (STREAM_ALREADY_EXISTS,                0x05, "Stream already exists");
-    (STREAM_NOT_AVAILABLE,                 0x06, "Stream not available");
-    (SASL_MECHANISM_NOT_SUPPORTED,         0x07, "SASL mechanism not supported");
-    (AUTHENTICATION_FAILURE,               0x08, "Authentication failure");
-    (SASL_ERROR,                           0x09, "SASL error");
-    (SASL_CHALLENGE,                       0x0a, "SASL challenge");
-    (SASL_AUTHENTICATION_FAILURE_LOOPBACK, 0x0b, "SASL authentication failure loopback");
-    (VIRTUAL_HOST_ACCESS_FAILURE,          0x0c, "Virtual host access failure");
-    (UNKNOWN_FRAME,                        0x0d, "Unknown frame");
-    (FRAME_TOO_LARGE,                      0x0e, "Frame too large");
-    (INTERNAL_ERROR,                       0x0f, "Internal error");
-    (ACCESS_REFUSED,                       0x10, "Access refused");
-    (PRECONDITION_FAILED,                  0x11, "Precondition failed");
-    (PUBLISHER_DOES_NOT_EXIST,             0x12, "Publisher does not exist");
-    (NO_OFFSET,                            0x13, "No offset");
-    (SASL_CANNOT_CHANGE_MECHANISM,         0x14, "SASL cannot change mechanism");
-    (SASL_CANNOT_CHANGE_USERNAME,          0x15, "SASL cannot change username");
+    (OK,                                   0x01);
+    (STREAM_DOES_NOT_EXIST,                0x02);
+    (SUBSCRIPTION_ID_EXISTS,               0x03);
+    (SUBSCRIPTION_ID_DOES_NOT_EXIST,       0x04);
+    (STREAM_ALREADY_EXISTS,                0x05);
+    (STREAM_NOT_AVAILABLE,                 0x06);
+    (SASL_MECHANISM_NOT_SUPPORTED,         0x07);
+    (AUTHENTICATION_FAILURE,               0x08);
+    (SASL_ERROR,                           0x09);
+    (SASL_CHALLENGE,                       0x0a);
+    (SASL_AUTHENTICATION_FAILURE_LOOPBACK, 0x0b);
+    (VIRTUAL_HOST_ACCESS_FAILURE,          0x0c);
+    (UNKNOWN_FRAME,                        0x0d);
+    (FRAME_TOO_LARGE,                      0x0e);
+    (INTERNAL_ERROR,                       0x0f);
+    (ACCESS_REFUSED,                       0x10);
+    (PRECONDITION_FAILED,                  0x11);
+    (PUBLISHER_DOES_NOT_EXIST,             0x12);
+    (NO_OFFSET,                            0x13);
+    (SASL_CANNOT_CHANGE_MECHANISM,         0x14);
+    (SASL_CANNOT_CHANGE_USERNAME,          0x15);
 }
 
 impl ResponseCode {
     pub const fn is_ok(self) -> bool {
         self.0 == Self::OK.0
     }
+}
 
-    pub const fn into_result(self) -> Result<(), Self> {
-        if self.is_ok() { Ok(()) } else { Err(self) }
+impl fmt::Debug for ResponseCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.raw_name() {
+            Some(name) => f.write_str(name),
+            None => write!(f, "ResponseCode({:#x})", self.0),
+        }
     }
 }
 
@@ -123,6 +100,81 @@ impl Decode for CodeResponse {
     }
 }
 
+wire_code! {
+    pub struct CommandKey(u16);
+    (DECLARE_PUBLISHER,         0x01);
+    (PUBLISH,                   0x02);
+    (PUBLISH_CONFIRM,           0x03);
+    (PUBLISH_ERROR,             0x04);
+    (QUERY_PUBLISHER_SEQUENCE,  0x05);
+    (DELETE_PUBLISHER,          0x06);
+    (SUBSCRIBE,                 0x07);
+    (DELIVER,                   0x08);
+    (CREDIT,                    0x09);
+    (STORE_OFFSET,              0x0a);
+    (QUERY_OFFSET,              0x0b);
+    (UNSUBSCRIBE,               0x0c);
+    (CREATE,                    0x0d);
+    (DELETE,                    0x0e);
+    (METADATA,                  0x0f);
+    (METADATA_UPDATE,           0x10);
+    (PEER_PROPERTIES,           0x11);
+    (SASL_HANDSHAKE,            0x12);
+    (SASL_AUTHENTICATE,         0x13);
+    (TUNE,                      0x14);
+    (OPEN,                      0x15);
+    (CLOSE,                     0x16);
+    (HEARTBEAT,                 0x17);
+    (ROUTE,                     0x18);
+    (PARTITIONS,                0x19);
+    (CONSUMER_UPDATE,           0x1a);
+    (EXCHANGE_COMMAND_VERSIONS, 0x1b);
+    (STREAM_STATS,              0x1c);
+    (CREATE_SUPER_STREAM,       0x1d);
+    (DELETE_SUPER_STREAM,       0x1e);
+    (RESOLVE_OFFSET_SPEC,       0x1f);
+}
+
+impl CommandKey {
+    const RESPONSE_BIT: u16 = 0x8000;
+
+    pub const fn command_id(self) -> Self {
+        Self(self.0 & !Self::RESPONSE_BIT)
+    }
+    pub const fn is_response(self) -> bool {
+        self.0 & Self::RESPONSE_BIT != 0
+    }
+    pub const fn to_response(self) -> Self {
+        Self(self.0 | Self::RESPONSE_BIT)
+    }
+
+    pub fn name(self) -> Option<&'static str> {
+        self.command_id().raw_name()
+    }
+}
+
+impl fmt::Debug for CommandKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.name() {
+            Some(name) if self.is_response() => write!(f, "{name}Response"),
+            Some(name) => f.write_str(name),
+            None => write!(f, "CommandKey({:#06x})", self.0),
+        }
+    }
+}
+
+impl Encode for CommandKey {
+    fn encode(&self, buf: &mut impl BufMut) {
+        buf.put_u16(self.0);
+    }
+}
+
+impl Decode for CommandKey {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self(reader.u16()?))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Offset(pub u64);
 
@@ -141,7 +193,7 @@ impl Decode for Offset {
 pub type ChunkId = Offset;
 
 pub trait Command {
-    const KEY: u16;
+    const KEY: CommandKey;
     const VERSION: u16 = 1;
 }
 
@@ -221,7 +273,7 @@ pub struct DeclarePublisher<'a> {
 }
 
 impl Command for DeclarePublisher<'_> {
-    const KEY: u16 = 0x0001;
+    const KEY: CommandKey = CommandKey::DECLARE_PUBLISHER;
 }
 
 impl Request for DeclarePublisher<'_> {
@@ -283,7 +335,7 @@ pub struct Publish {
 }
 
 impl Command for Publish {
-    const KEY: u16 = 0x0002;
+    const KEY: CommandKey = CommandKey::PUBLISH;
 }
 
 impl Notification for Publish {}
@@ -303,7 +355,7 @@ pub struct PublishV2 {
 }
 
 impl Command for PublishV2 {
-    const KEY: u16 = 0x002;
+    const KEY: CommandKey = CommandKey::PUBLISH;
 }
 
 impl Notification for PublishV2 {}
@@ -316,7 +368,7 @@ pub struct PublishConfirm {
 }
 
 impl Command for PublishConfirm {
-    const KEY: u16 = 0x0003;
+    const KEY: CommandKey = CommandKey::PUBLISH_CONFIRM;
 }
 
 impl Notification for PublishConfirm {}
@@ -352,7 +404,7 @@ pub struct PublishError {
 }
 
 impl Command for PublishError {
-    const KEY: u16 = 0x0004;
+    const KEY: CommandKey = CommandKey::PUBLISH_ERROR;
 }
 
 impl Notification for PublishError {}
@@ -374,7 +426,7 @@ pub struct QueryPublisherSequence<'a> {
 }
 
 impl Command for QueryPublisherSequence<'_> {
-    const KEY: u16 = 0x0005;
+    const KEY: CommandKey = CommandKey::QUERY_PUBLISHER_SEQUENCE;
 }
 
 pub struct QueryPublisherResponse {
@@ -415,7 +467,7 @@ pub struct DeletePublisher {
 }
 
 impl Command for DeletePublisher {
-    const KEY: u16 = 0x0006;
+    const KEY: CommandKey = CommandKey::DELETE_PUBLISHER;
 }
 
 impl Request for DeletePublisher {
@@ -483,7 +535,7 @@ pub struct Subscribe<'a> {
 }
 
 impl Command for Subscribe<'_> {
-    const KEY: u16 = 0x0007;
+    const KEY: CommandKey = CommandKey::SUBSCRIBE;
 }
 
 impl Request for Subscribe<'_> {
@@ -536,7 +588,7 @@ pub struct Deliver {
 }
 
 impl Command for Deliver {
-    const KEY: u16 = 0x0008;
+    const KEY: CommandKey = CommandKey::DELIVER;
 }
 
 impl Notification for Deliver {}
@@ -548,7 +600,7 @@ pub struct DeliverV2 {
 }
 
 impl Command for DeliverV2 {
-    const KEY: u16 = 0x0008;
+    const KEY: CommandKey = CommandKey::DELIVER;
     const VERSION: u16 = 2;
 }
 
@@ -563,7 +615,7 @@ pub struct Credit {
 }
 
 impl Command for Credit {
-    const KEY: u16 = 0x0009;
+    const KEY: CommandKey = CommandKey::CREDIT;
 }
 
 /// NB: the server sent a response only in case of problem, e.g. crediting an unknown subscription.
@@ -607,7 +659,7 @@ pub struct StoreOffset<'a> {
 }
 
 impl Command for StoreOffset<'_> {
-    const KEY: u16 = 0x000a;
+    const KEY: CommandKey = CommandKey::STORE_OFFSET;
 }
 
 impl Notification for StoreOffset<'_> {}
@@ -628,7 +680,7 @@ pub struct QueryOffset<'a> {
 }
 
 impl Command for QueryOffset<'_> {
-    const KEY: u16 = 0x000b;
+    const KEY: CommandKey = CommandKey::QUERY_OFFSET;
 }
 
 pub struct QueryOffsetResponse {
@@ -676,7 +728,7 @@ pub struct Unsubscribe {
 }
 
 impl Command for Unsubscribe {
-    const KEY: u16 = 0x000c;
+    const KEY: CommandKey = CommandKey::UNSUBSCRIBE;
 }
 
 impl Request for Unsubscribe {
@@ -697,7 +749,7 @@ pub struct Create<'a> {
 }
 
 impl Command for Create<'_> {
-    const KEY: u16 = 0x000d;
+    const KEY: CommandKey = CommandKey::CREATE;
 }
 
 impl Request for Create<'_> {
@@ -718,7 +770,7 @@ pub struct Delete<'a> {
 }
 
 impl Command for Delete<'_> {
-    const KEY: u16 = 0x000e;
+    const KEY: CommandKey = CommandKey::DELETE;
 }
 
 impl Request for Delete<'_> {
@@ -733,12 +785,12 @@ impl Encode for Delete<'_> {
 
 // Metadata
 
-pub struct MetadataQuery<'a> {
+pub struct Metadata<'a> {
     pub streams: &'a [&'a str],
 }
 
-impl Command for MetadataQuery<'_> {
-    const KEY: u16 = 0x000f;
+impl Command for Metadata<'_> {
+    const KEY: CommandKey = CommandKey::METADATA;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -806,11 +858,11 @@ pub struct MetadataResponse {
     pub streams: Vec<StreamMetadata>,
 }
 
-impl Request for MetadataQuery<'_> {
+impl Request for Metadata<'_> {
     type Response = MetadataResponse;
 }
 
-impl Encode for MetadataQuery<'_> {
+impl Encode for Metadata<'_> {
     fn encode(&self, buf: &mut impl BufMut) {
         self.streams.encode(buf);
     }
@@ -833,7 +885,7 @@ pub struct MetadataUpdate {
 }
 
 impl Command for MetadataUpdate {
-    const KEY: u16 = 0x0010;
+    const KEY: CommandKey = CommandKey::METADATA_UPDATE;
 }
 
 impl Notification for MetadataUpdate {}
@@ -854,7 +906,7 @@ pub struct PeerProperties<'a> {
 }
 
 impl Command for PeerProperties<'_> {
-    const KEY: u16 = 0x0011;
+    const KEY: CommandKey = CommandKey::PEER_PROPERTIES;
 }
 
 pub struct PeerPropertiesResponse {
@@ -892,7 +944,7 @@ impl Decode for PeerPropertiesResponse {
 pub struct SaslHandshake;
 
 impl Command for SaslHandshake {
-    const KEY: u16 = 0x0012;
+    const KEY: CommandKey = CommandKey::SASL_HANDSHAKE;
 }
 
 pub struct SaslHandshakeResponse {
@@ -940,7 +992,7 @@ pub struct SaslAuthenticate<'a> {
 }
 
 impl Command for SaslAuthenticate<'_> {
-    const KEY: u16 = 0x0013;
+    const KEY: CommandKey = CommandKey::SASL_AUTHENTICATE;
 }
 
 pub struct SaslAuthenticateResponse {
@@ -993,7 +1045,7 @@ pub struct Tune {
 }
 
 impl Command for Tune {
-    const KEY: u16 = 0x0014;
+    const KEY: CommandKey = CommandKey::TUNE;
 }
 
 impl Request for Tune {
@@ -1023,7 +1075,7 @@ pub struct Open<'a> {
 }
 
 impl Command for Open<'_> {
-    const KEY: u16 = 0x0015;
+    const KEY: CommandKey = CommandKey::OPEN;
 }
 
 pub struct OpenResponse {
@@ -1073,7 +1125,7 @@ pub struct Close<'a> {
 }
 
 impl Command for Close<'_> {
-    const KEY: u16 = 0x0016;
+    const KEY: CommandKey = CommandKey::CLOSE;
 }
 
 impl Request for Close<'_> {
@@ -1101,7 +1153,7 @@ impl Decode for Close<'static> {
 pub struct Heartbeat;
 
 impl Command for Heartbeat {
-    const KEY: u16 = 0x0017;
+    const KEY: CommandKey = CommandKey::HEARTBEAT;
 }
 
 impl Notification for Heartbeat {}
@@ -1125,7 +1177,7 @@ pub struct Route<'a> {
 }
 
 impl Command for Route<'_> {
-    const KEY: u16 = 0x0018;
+    const KEY: CommandKey = CommandKey::ROUTE;
 }
 
 pub struct RouteResponse {
@@ -1166,7 +1218,7 @@ pub struct Partitions<'a> {
 }
 
 impl Command for Partitions<'_> {
-    const KEY: u16 = 0x0019;
+    const KEY: CommandKey = CommandKey::PARTITIONS;
 }
 
 pub struct PartitionsResponse {
@@ -1208,7 +1260,7 @@ pub struct ConsumerUpdate {
 }
 
 impl Command for ConsumerUpdate {
-    const KEY: u16 = 0x001a;
+    const KEY: CommandKey = CommandKey::CONSUMER_UPDATE;
 }
 
 pub struct ConsumerUpdateResponse {
@@ -1220,14 +1272,14 @@ pub struct ConsumerUpdateResponse {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommandVersions {
-    pub key: u16,
+    pub key: CommandKey,
     pub min_version: u16,
     pub max_version: u16,
 }
 
 impl Encode for CommandVersions {
     fn encode(&self, buf: &mut impl BufMut) {
-        buf.put_u16(self.key);
+        self.key.encode(buf);
         buf.put_u16(self.min_version);
         buf.put_u16(self.max_version);
     }
@@ -1236,43 +1288,43 @@ impl Encode for CommandVersions {
 impl Decode for CommandVersions {
     fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
         Ok(Self {
-            key: reader.u16()?,
+            key: reader.decode()?,
             min_version: reader.u16()?,
             max_version: reader.u16()?,
         })
     }
 }
 
-pub struct CommandVersionsExchange<'a> {
+pub struct ExchangeCommandVersions<'a> {
     pub commands: &'a [CommandVersions],
 }
 
-impl Command for CommandVersionsExchange<'_> {
-    const KEY: u16 = 0x001b;
+impl Command for ExchangeCommandVersions<'_> {
+    const KEY: CommandKey = CommandKey::EXCHANGE_COMMAND_VERSIONS;
 }
 
-pub struct CommandVersionsExchangeResponse {
+pub struct ExchangeCommandVersionsResponse {
     pub code: ResponseCode,
     pub commands: Vec<CommandVersions>,
 }
 
-impl Status for CommandVersionsExchangeResponse {
+impl Status for ExchangeCommandVersionsResponse {
     fn code(&self) -> ResponseCode {
         self.code
     }
 }
 
-impl Request for CommandVersionsExchange<'_> {
-    type Response = CommandVersionsExchangeResponse;
+impl Request for ExchangeCommandVersions<'_> {
+    type Response = ExchangeCommandVersionsResponse;
 }
 
-impl Encode for CommandVersionsExchange<'_> {
+impl Encode for ExchangeCommandVersions<'_> {
     fn encode(&self, buf: &mut impl BufMut) {
         self.commands.encode(buf);
     }
 }
 
-impl Decode for CommandVersionsExchangeResponse {
+impl Decode for ExchangeCommandVersionsResponse {
     fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
         Ok(Self {
             code: reader.decode()?,
@@ -1288,7 +1340,7 @@ pub struct StreamStats<'a> {
 }
 
 impl Command for StreamStats<'_> {
-    const KEY: u16 = 0x001c;
+    const KEY: CommandKey = CommandKey::STREAM_STATS;
 }
 
 pub struct StreamStatsResponse {
@@ -1331,7 +1383,7 @@ pub struct CreateSuperStream<'a> {
 }
 
 impl Command for CreateSuperStream<'_> {
-    const KEY: u16 = 0x001d;
+    const KEY: CommandKey = CommandKey::CREATE_SUPER_STREAM;
 }
 
 impl Request for CreateSuperStream<'_> {
@@ -1354,7 +1406,7 @@ pub struct DeleteSuperStream<'a> {
 }
 
 impl Command for DeleteSuperStream<'_> {
-    const KEY: u16 = 0x001e;
+    const KEY: CommandKey = CommandKey::DELETE_SUPER_STREAM;
 }
 
 impl Request for DeleteSuperStream<'_> {
@@ -1376,7 +1428,7 @@ pub struct ResolveOffsetSpec<'a> {
 }
 
 impl Command for ResolveOffsetSpec<'_> {
-    const KEY: u16 = 0x001f;
+    const KEY: CommandKey = CommandKey::RESOLVE_OFFSET_SPEC;
 }
 
 pub struct ResolveOffsetSpecResponse {
