@@ -9,7 +9,7 @@ use std::{
 use bytes::{BufMut, Bytes};
 
 use crate::{
-    PublishingId, Reference,
+    PublisherId, PublishingId, Reference, SubscriptionId,
     codec::{Decode, DecodeError, Encode, Reader},
 };
 
@@ -239,6 +239,30 @@ impl Decode for Reference {
     }
 }
 
+impl Encode for PublisherId {
+    fn encode(&self, buf: &mut impl BufMut) {
+        buf.put_u8(self.0);
+    }
+}
+
+impl Decode for PublisherId {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        reader.u8().map(Self)
+    }
+}
+
+impl Encode for SubscriptionId {
+    fn encode(&self, buf: &mut impl BufMut) {
+        buf.put_u8(self.0);
+    }
+}
+
+impl Decode for SubscriptionId {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        reader.u8().map(Self)
+    }
+}
+
 // DeclarePublisher
 
 pub struct DeclarePublisher<'a> {
@@ -265,21 +289,6 @@ impl Encode for DeclarePublisher<'_> {
 
 // Publish
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PublisherId(pub u8);
-
-impl Encode for PublisherId {
-    fn encode(&self, buf: &mut impl BufMut) {
-        buf.put_u8(self.0);
-    }
-}
-
-impl Decode for PublisherId {
-    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
-        reader.u8().map(Self)
-    }
-}
-
 pub struct PublishedMessage {
     pub id: PublishingId,
     pub body: Bytes,
@@ -293,7 +302,7 @@ impl Encode for PublishedMessage {
 }
 
 pub struct Publish<'a> {
-    pub publisher_id: PublisherId,
+    pub publisher: PublisherId,
     pub messages: &'a [PublishedMessage],
 }
 
@@ -305,7 +314,7 @@ impl Notification for Publish<'_> {}
 
 impl Encode for Publish<'_> {
     fn encode(&self, buf: &mut impl BufMut) {
-        self.publisher_id.encode(buf);
+        self.publisher.encode(buf);
         self.messages.encode(buf);
     }
 }
@@ -328,7 +337,7 @@ impl Encode for FilteredMessage {
 }
 
 pub struct PublishV2<'a> {
-    pub publisher_id: PublisherId,
+    pub publisher: PublisherId,
     pub messages: &'a [FilteredMessage],
 }
 
@@ -340,7 +349,7 @@ impl Notification for PublishV2<'_> {}
 
 impl Encode for PublishV2<'_> {
     fn encode(&self, buf: &mut impl BufMut) {
-        self.publisher_id.encode(buf);
+        self.publisher.encode(buf);
         self.messages.encode(buf);
     }
 }
@@ -448,7 +457,7 @@ impl Decode for QueryPublisherResponse {
 // DeletePublisher
 
 pub struct DeletePublisher {
-    pub publisher_id: PublisherId,
+    pub id: PublisherId,
 }
 
 impl Command for DeletePublisher {
@@ -461,26 +470,11 @@ impl Request for DeletePublisher {
 
 impl Encode for DeletePublisher {
     fn encode(&self, buf: &mut impl BufMut) {
-        self.publisher_id.encode(buf);
+        self.id.encode(buf);
     }
 }
 
 // Subscribe
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SubscriptionId(pub u8);
-
-impl Encode for SubscriptionId {
-    fn encode(&self, buf: &mut impl BufMut) {
-        buf.put_u8(self.0);
-    }
-}
-
-impl Decode for SubscriptionId {
-    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
-        reader.u8().map(Self)
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OffsetSpecification {

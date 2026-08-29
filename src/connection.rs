@@ -3,6 +3,7 @@
 use std::{
     collections::HashMap,
     fmt,
+    marker::PhantomData,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
@@ -14,7 +15,7 @@ use parking_lot::{Mutex, RwLock};
 use tokio::sync::{Notify, mpsc, oneshot};
 
 use crate::{
-    PublishOutcome, PublishingId, Reference,
+    PublishOutcome, PublisherId, PublishingId, Reference,
     codec::{Decode, DecodeError, Encode, Reader},
     commands::{self, Command, CommandKey, Notification, Request, ResponseCode, Status},
 };
@@ -99,19 +100,21 @@ struct TableEntry<T> {
 }
 
 #[derive(Debug)]
-struct Table<T> {
+struct Table<I, T> {
     // NOTE: always 256 slots.
     slots: Box<[Option<TableEntry<T>>]>,
     next: u8,
     len: u16,
+    _id: PhantomData<I>,
 }
 
-impl<T> Table<T> {
+impl<I: From<u8> + Into<u8> + Copy, T> Table<I, T> {
     fn new() -> Self {
         Self {
             slots: (0..=u8::MAX).map(|_| None).collect(),
             next: 0,
             len: 0,
+            _id: PhantomData,
         }
     }
 
@@ -119,15 +122,15 @@ impl<T> Table<T> {
         self.slots[id as usize].as_ref().map(|e| &e.value)
     }
 
-    pub fn insert(&mut self, stream: String, value: T) -> Option<u8> {
-        let id = self.free_id()?;
+    pub fn insert(&mut self, stream: String, value: T) -> Option<I> {
+        let id = self.free_slot()?;
         self.slots[id as usize] = Some(TableEntry { stream, value });
         self.len += 1;
-        Some(id)
+        Some(id.into())
     }
 
-    pub fn remove(&mut self, id: u8) -> Option<T> {
-        let taken = self.slots[id as usize].take();
+    pub fn remove(&mut self, id: I) -> Option<T> {
+        let taken = self.slots[id.into() as usize].take();
         if taken.is_some() {
             self.len -= 1;
         }
@@ -135,20 +138,20 @@ impl<T> Table<T> {
     }
 
     /// Everything registered against a stream, removed. For MetadataUpdate.
-    pub fn drain_stream(&mut self, stream: &str) -> Vec<(u8, T)> {
-        let ids: Vec<u8> = self
+    pub fn drain_stream(&mut self, stream: &str) -> Vec<(I, T)> {
+        let ids: Vec<I> = self
             .slots
             .iter()
             .enumerate()
             .filter(|(_, s)| s.as_ref().is_some_and(|e| e.stream == stream))
-            .map(|(i, _)| i as u8)
+            .map(|(i, _)| (i as u8).into())
             .collect();
         ids.into_iter()
             .filter_map(|id| self.remove(id).map(|v| (id, v)))
             .collect()
     }
 
-    fn free_id(&mut self) -> Option<u8> {
+    fn free_slot(&mut self) -> Option<u8> {
         for _ in 0..=u8::MAX {
             let id = self.next;
             self.next = self.next.wrapping_add(1);
@@ -161,19 +164,19 @@ impl<T> Table<T> {
 }
 
 #[derive(Debug)]
-struct SlotGuard<'a, T> {
-    table: &'a RwLock<Table<T>>,
-    id: u8,
+struct SlotGuard<'a, I: From<u8> + Into<u8> + Copy, T> {
+    table: &'a RwLock<Table<I, T>>,
+    id: I,
     committed: bool,
 }
 
-impl<T> SlotGuard<'_, T> {
+impl<I: From<u8> + Into<u8> + Copy, T> SlotGuard<'_, I, T> {
     fn commit(mut self) {
         self.committed = true;
     }
 }
 
-impl<T> Drop for SlotGuard<'_, T> {
+impl<I: From<u8> + Into<u8> + Copy, T> Drop for SlotGuard<'_, I, T> {
     fn drop(&mut self) {
         if !self.committed {
             self.table.write().remove(self.id);
@@ -213,7 +216,7 @@ impl PublishTracker {
 #[derive(Debug)]
 pub struct Publisher {
     connection: Connection,
-    id: u8,
+    id: PublisherId,
     stream: String,
     reference: Option<Reference>,
     tracker: Arc<PublishTracker>,
@@ -232,7 +235,7 @@ impl Publisher {
         self.tracker.sent(1);
         self.connection
             .notify(commands::Publish {
-                publisher_id: commands::PublisherId(self.id),
+                publisher: self.id,
                 messages: &[commands::PublishedMessage { id, body }],
             })
             .await
@@ -257,7 +260,7 @@ impl Publisher {
         self.tracker.sent(n);
         self.connection
             .notify(commands::Publish {
-                publisher_id: commands::PublisherId(self.id),
+                publisher: self.id,
                 messages: &messages,
             })
             .await
@@ -314,7 +317,7 @@ struct Shared {
     // heartbeat: u32 / Duration
     close_reason: Mutex<Option<(ResponseCode, String)>>,
 
-    publishers: RwLock<Table<PublisherSlot>>,
+    publishers: RwLock<Table<PublisherId, PublisherSlot>>,
 }
 
 impl Connection {
@@ -460,7 +463,7 @@ impl Connection {
         };
 
         self.call(commands::DeclarePublisher {
-            id: commands::PublisherId(id),
+            id,
             reference: reference.as_deref().unwrap_or(""),
             stream,
         })
@@ -482,12 +485,8 @@ impl Connection {
         ))
     }
 
-    async fn delete_publisher(&self, id: u8) -> Result<bool, Error> {
-        let result = self
-            .call_raw(commands::DeletePublisher {
-                publisher_id: commands::PublisherId(id),
-            })
-            .await;
+    async fn delete_publisher(&self, id: PublisherId) -> Result<bool, Error> {
+        let result = self.call_raw(commands::DeletePublisher { id }).await;
         self.0.publishers.write().remove(id);
         match result?.code() {
             c if c.is_ok() => Ok(true),

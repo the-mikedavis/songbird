@@ -105,3 +105,33 @@ pub struct PublishFailure {
     pub publishing_id: PublishingId,
     pub code: ResponseCode,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PublisherId(u8);
+
+impl From<u8> for PublisherId {
+    fn from(value: u8) -> Self {
+        Self(value)
+    }
+}
+
+impl From<PublisherId> for u8 {
+    fn from(val: PublisherId) -> Self {
+        val.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubscriptionId(u8);
+
+impl From<u8> for SubscriptionId {
+    fn from(value: u8) -> Self {
+        Self(value)
+    }
+}
+
+impl From<SubscriptionId> for u8 {
+    fn from(val: SubscriptionId) -> Self {
+        val.0
+    }
+}
