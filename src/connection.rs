@@ -5,18 +5,18 @@ use std::{
     fmt,
     sync::{
         Arc,
-        atomic::{AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
 };
 
 use bytes::{BufMut, Bytes, BytesMut};
 use parking_lot::{Mutex, RwLock};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Notify, mpsc, oneshot};
 
 use crate::{
-    PublishOutcome,
+    PublishOutcome, Reference,
     codec::{Decode, DecodeError, Encode, Reader},
-    commands::{self, Command, CommandKey, Notification, Reference, Request, ResponseCode, Status},
+    commands::{self, Command, CommandKey, Notification, Request, ResponseCode, Status},
 };
 
 #[derive(Debug)]
@@ -184,6 +184,30 @@ impl<T> Drop for SlotGuard<'_, T> {
 #[derive(Debug)]
 struct PublisherSlot {
     outcomes: mpsc::UnboundedSender<PublishOutcome>,
+    tracker: Arc<PublishTracker>,
+}
+
+#[derive(Default, Debug)]
+struct PublishTracker {
+    outstanding: AtomicU64,
+    drained: Notify,
+}
+
+impl PublishTracker {
+    fn sent(&self, n: u64) {
+        self.outstanding.fetch_add(n, Ordering::AcqRel);
+    }
+
+    fn resolved(&self, n: u64) {
+        if self.outstanding.fetch_sub(n, Ordering::AcqRel) == n {
+            self.drained.notify_waiters();
+        }
+    }
+
+    fn abandon(&self) {
+        self.outstanding.store(0, Ordering::Release);
+        self.drained.notify_waiters();
+    }
 }
 
 #[derive(Debug)]
@@ -191,8 +215,52 @@ pub struct Publisher {
     connection: Connection,
     id: u8,
     stream: String,
-    outcomes: mpsc::UnboundedReceiver<PublishOutcome>,
+    reference: Option<Reference>,
+    tracker: Arc<PublishTracker>,
     next_publishing_id: AtomicU64,
+    closed: AtomicBool,
+}
+
+pub struct Confirms {
+    outcomes: mpsc::UnboundedReceiver<PublishOutcome>,
+}
+
+impl Publisher {
+    async fn drain_outstanding(&self) {
+        loop {
+            // Create the future before checking, so a resolution between
+            // the check and the await isn't missed.
+            let notified = self.tracker.drained.notified();
+            if self.tracker.outstanding.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    pub async fn close(&self) -> Result<(), Error> {
+        if self.closed.swap(true, Ordering::AcqRel) {
+            return Ok(()); // already closed
+        }
+        self.drain_outstanding().await;
+        self.connection.delete_publisher(self.id).await?;
+        Ok(())
+    }
+}
+
+impl Drop for Publisher {
+    fn drop(&mut self) {
+        if self.closed.load(Ordering::Acquire) {
+            return;
+        }
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let connection = self.connection.clone();
+            let id = self.id;
+            handle.spawn(async move {
+                let _ = connection.delete_publisher(id).await;
+            });
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -324,40 +392,71 @@ impl Connection {
     pub async fn declare_publisher(
         &self,
         stream: &str,
-        reference: Option<&Reference>,
-    ) -> Result<Publisher, Error> {
-        let (tx, outcomes) = mpsc::unbounded_channel();
+        reference: Option<Reference>,
+    ) -> Result<(Publisher, Confirms), Error> {
+        let next_publishing_id = match &reference {
+            Some(reference) => self.query_publisher_sequence(reference, stream).await? + 1,
+            None => 0,
+        };
+
+        let (tx, rx) = mpsc::unbounded_channel();
+        let tracker = Arc::new(PublishTracker::default());
         let id = self
             .0
             .publishers
             .write()
-            .insert(stream.to_owned(), PublisherSlot { outcomes: tx })
+            .insert(
+                stream.to_owned(),
+                PublisherSlot {
+                    outcomes: tx,
+                    tracker: tracker.clone(),
+                },
+            )
             .ok_or(Error::PublisherIdsExhausted)?;
         let slot = SlotGuard {
             table: &self.0.publishers,
             id,
             committed: false,
         };
-        let response = self
-            .call(commands::DeclarePublisher {
-                id: commands::PublisherId(id),
-                reference,
-                stream,
-            })
-            .await?;
-        check(commands::DeclarePublisher::KEY, response.code())?;
-        let next_publishing_id = match reference {
-            Some(reference) => self.query_publisher_sequence(reference, stream).await? + 1,
-            None => 0,
-        };
-        slot.commit();
-        Ok(Publisher {
-            connection: self.clone(),
-            id,
-            stream: stream.to_owned(),
-            outcomes,
-            next_publishing_id: AtomicU64::new(next_publishing_id),
+
+        self.call(commands::DeclarePublisher {
+            id: commands::PublisherId(id),
+            reference: reference.as_deref().unwrap_or(""),
+            stream,
         })
+        .await?;
+
+        slot.commit();
+
+        Ok((
+            Publisher {
+                connection: self.clone(),
+                id,
+                stream: stream.to_owned(),
+                reference,
+                tracker,
+                next_publishing_id: AtomicU64::new(next_publishing_id),
+                closed: AtomicBool::new(false),
+            },
+            Confirms { outcomes: rx },
+        ))
+    }
+
+    async fn delete_publisher(&self, id: u8) -> Result<bool, Error> {
+        let result = self
+            .call_raw(commands::DeletePublisher {
+                publisher_id: commands::PublisherId(id),
+            })
+            .await;
+        self.0.publishers.write().remove(id);
+        match result?.code() {
+            c if c.is_ok() => Ok(true),
+            ResponseCode::PUBLISHER_DOES_NOT_EXIST => Ok(false),
+            code => Err(Error::Refused {
+                command: CommandKey::DELETE_PUBLISHER,
+                code,
+            }),
+        }
     }
 
     pub async fn exchange_command_versions(&self) -> Result<Vec<commands::CommandVersion>, Error> {

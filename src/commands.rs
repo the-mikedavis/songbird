@@ -8,7 +8,10 @@ use std::{
 
 use bytes::{BufMut, Bytes};
 
-use crate::codec::{Decode, DecodeError, Encode, Reader};
+use crate::{
+    Reference,
+    codec::{Decode, DecodeError, Encode, Reader},
+};
 
 macro_rules! wire_code {
     (
@@ -224,34 +227,6 @@ pub trait Request: Command {
 
 pub trait Notification: Command {}
 
-#[derive(Debug, Clone, Copy)]
-pub struct ReferenceTooLongError(usize);
-
-impl fmt::Display for ReferenceTooLongError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_fmt(format_args!(
-            "reference too long, expected 256 bytes or less, got {}",
-            self.0
-        ))
-    }
-}
-
-impl std::error::Error for ReferenceTooLongError {}
-
-/// A string of max 256 bytes.
-pub struct Reference(String);
-
-impl Reference {
-    pub fn new(value: impl Into<String>) -> Result<Self, ReferenceTooLongError> {
-        let inner = value.into();
-        if inner.len() > 256 {
-            Err(ReferenceTooLongError(inner.len()))
-        } else {
-            Ok(Self(inner))
-        }
-    }
-}
-
 impl Encode for Reference {
     fn encode(&self, buf: &mut impl BufMut) {
         self.0.as_str().encode(buf)
@@ -268,7 +243,7 @@ impl Decode for Reference {
 
 pub struct DeclarePublisher<'a> {
     pub id: PublisherId,
-    pub reference: Option<&'a Reference>,
+    pub reference: &'a str,
     pub stream: &'a str,
 }
 
@@ -283,11 +258,7 @@ impl Request for DeclarePublisher<'_> {
 impl Encode for DeclarePublisher<'_> {
     fn encode(&self, buf: &mut impl BufMut) {
         self.id.encode(buf);
-        match self.reference {
-            Some(r) => r.encode(buf),
-            // Required according to spec, but can be empty to signal none.
-            None => "".encode(buf),
-        }
+        self.reference.encode(buf);
         self.stream.encode(buf);
     }
 }
