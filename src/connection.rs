@@ -14,7 +14,7 @@ use parking_lot::{Mutex, RwLock};
 use tokio::sync::{Notify, mpsc, oneshot};
 
 use crate::{
-    PublishOutcome, Reference,
+    PublishOutcome, PublishingId, Reference,
     codec::{Decode, DecodeError, Encode, Reader},
     commands::{self, Command, CommandKey, Notification, Request, ResponseCode, Status},
 };
@@ -217,7 +217,7 @@ pub struct Publisher {
     stream: String,
     reference: Option<Reference>,
     tracker: Arc<PublishTracker>,
-    next_publishing_id: tokio::sync::Mutex<u64>,
+    next_publishing_id: tokio::sync::Mutex<PublishingId>,
     closed: AtomicBool,
 }
 
@@ -226,7 +226,22 @@ pub struct Confirms {
 }
 
 impl Publisher {
-    pub async fn send_batch(&self, bodies: Vec<Bytes>) -> Result<Vec<u64>, Error> {
+    pub async fn send(&self, body: Bytes) -> Result<PublishingId, Error> {
+        let mut next = self.next_publishing_id.lock().await;
+        let id = *next;
+        self.tracker.sent(1);
+        self.connection
+            .notify(commands::Publish {
+                publisher_id: commands::PublisherId(self.id),
+                messages: &[commands::PublishedMessage { id, body }],
+            })
+            .await
+            .inspect_err(|_| self.tracker.resolved(1))?;
+        *next = id + 1;
+        Ok(id)
+    }
+
+    pub async fn send_batch(&self, bodies: Vec<Bytes>) -> Result<Vec<PublishingId>, Error> {
         let n = bodies.len() as u64;
         let mut next = self.next_publishing_id.lock().await;
         let first = *next;
@@ -408,7 +423,7 @@ impl Connection {
         &self,
         reference: &Reference,
         stream: &str,
-    ) -> Result<u64, Error> {
+    ) -> Result<PublishingId, Error> {
         self.call(commands::QueryPublisherSequence { reference, stream })
             .await
             .map(|resp| resp.sequence)
