@@ -117,6 +117,12 @@ impl Decode for ResponseCode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CodeResponse(ResponseCode);
 
+impl Decode for CodeResponse {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self(reader.decode()?))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Offset(pub u64);
 
@@ -210,7 +216,7 @@ impl Decode for Reference {
 
 pub struct DeclarePublisher<'a> {
     pub id: PublisherId,
-    pub reference: &'a Reference,
+    pub reference: Option<&'a Reference>,
     pub stream: &'a str,
 }
 
@@ -225,7 +231,11 @@ impl Request for DeclarePublisher<'_> {
 impl Encode for DeclarePublisher<'_> {
     fn encode(&self, buf: &mut impl BufMut) {
         self.id.encode(buf);
-        self.reference.encode(buf);
+        match self.reference {
+            Some(r) => r.encode(buf),
+            // Required according to spec, but can be empty to signal none.
+            None => "".encode(buf),
+        }
         self.stream.encode(buf);
     }
 }

@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use std::fmt;
+
 use bytes::{BufMut, Bytes};
 
 // Encode
@@ -35,6 +37,7 @@ pub struct Reader<'a> {
     rest: &'a [u8],
 }
 
+#[derive(Debug)]
 pub enum DecodeError {
     /// Not enough bytes in the frame to parse a size the frame requests.
     Truncated,
@@ -44,8 +47,23 @@ pub enum DecodeError {
     NotUtf8,
     /// Received a nullary value where the protocol requires non-null.
     UnexpectedNull,
+    /// Extra unexpected trailing bytes in frame.
+    TrailingBytes,
     /// Any other kind of error.
     Custom(Box<dyn std::error::Error>),
+}
+
+impl fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Truncated => f.write_str("not enough bytes in frame"),
+            Self::Malformed => f.write_str("frame contained malformed input"),
+            Self::NotUtf8 => f.write_str("frame contained a non-UTF8 string"),
+            Self::UnexpectedNull => f.write_str("frame contained an unexpected null size"),
+            Self::TrailingBytes => f.write_str("unexpected trailing bytes in frame"),
+            Self::Custom(_err) => todo!(),
+        }
+    }
 }
 
 pub trait Decode: Sized {
