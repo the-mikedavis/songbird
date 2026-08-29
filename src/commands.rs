@@ -297,39 +297,68 @@ impl Decode for PublishingId {
 
 pub struct PublishedMessage {
     pub id: PublishingId,
-    pub message: Vec<u8>,
+    pub body: Bytes,
 }
 
-pub struct Publish {
+impl Encode for PublishedMessage {
+    fn encode(&self, buf: &mut impl BufMut) {
+        self.id.encode(buf);
+        self.body.encode(buf);
+    }
+}
+
+pub struct Publish<'a> {
     pub publisher_id: PublisherId,
-    pub published_messages: Vec<PublishedMessage>,
+    pub messages: &'a [PublishedMessage],
 }
 
-impl Command for Publish {
+impl Command for Publish<'_> {
     const KEY: CommandKey = CommandKey::PUBLISH;
 }
 
-impl Notification for Publish {}
+impl Notification for Publish<'_> {}
 
-pub struct PublishedMessageV2 {
+impl Encode for Publish<'_> {
+    fn encode(&self, buf: &mut impl BufMut) {
+        self.publisher_id.encode(buf);
+        self.messages.encode(buf);
+    }
+}
+
+pub struct FilteredMessage {
     pub id: PublishingId,
-    // NOTE: null is actually accepted, but the protocol doc suggests using
-    // version 1 if there is no filter value. Ideally we'd choose between
-    // version 1 and 2 when checking a higher level message's type.
-    pub filter_value: String,
-    pub message: Vec<u8>,
+    pub filter_value: Option<String>,
+    pub message: Bytes,
 }
 
-pub struct PublishV2 {
+impl Encode for FilteredMessage {
+    fn encode(&self, buf: &mut impl BufMut) {
+        self.id.encode(buf);
+        match &self.filter_value {
+            Some(filter) => filter.as_str().encode(buf),
+            None => buf.put_i16(-1),
+        }
+        self.message.encode(buf);
+    }
+}
+
+pub struct PublishV2<'a> {
     pub publisher_id: PublisherId,
-    pub published_messages: Vec<PublishedMessageV2>,
+    pub messages: &'a [FilteredMessage],
 }
 
-impl Command for PublishV2 {
+impl Command for PublishV2<'_> {
     const KEY: CommandKey = CommandKey::PUBLISH;
 }
 
-impl Notification for PublishV2 {}
+impl Notification for PublishV2<'_> {}
+
+impl Encode for PublishV2<'_> {
+    fn encode(&self, buf: &mut impl BufMut) {
+        self.publisher_id.encode(buf);
+        self.messages.encode(buf);
+    }
+}
 
 // PublishConfirm
 

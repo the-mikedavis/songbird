@@ -217,7 +217,7 @@ pub struct Publisher {
     stream: String,
     reference: Option<Reference>,
     tracker: Arc<PublishTracker>,
-    next_publishing_id: AtomicU64,
+    next_publishing_id: tokio::sync::Mutex<u64>,
     closed: AtomicBool,
 }
 
@@ -226,6 +226,31 @@ pub struct Confirms {
 }
 
 impl Publisher {
+    pub async fn send_batch(&self, bodies: Vec<Bytes>) -> Result<Vec<u64>, Error> {
+        let n = bodies.len() as u64;
+        let mut next = self.next_publishing_id.lock().await;
+        let first = *next;
+        let messages: Vec<_> = bodies
+            .into_iter()
+            .enumerate()
+            .map(|(i, body)| commands::PublishedMessage {
+                id: commands::PublishingId(first + i as u64),
+                body,
+            })
+            .collect();
+        // Count before sending.
+        self.tracker.sent(n);
+        self.connection
+            .notify(commands::Publish {
+                publisher_id: commands::PublisherId(self.id),
+                messages: &messages,
+            })
+            .await
+            .inspect_err(|_| self.tracker.resolved(n))?;
+        *next = first + n;
+        Ok((first + first..n).collect())
+    }
+
     async fn drain_outstanding(&self) {
         loop {
             // Create the future before checking, so a resolution between
@@ -435,7 +460,7 @@ impl Connection {
                 stream: stream.to_owned(),
                 reference,
                 tracker,
-                next_publishing_id: AtomicU64::new(next_publishing_id),
+                next_publishing_id: tokio::sync::Mutex::new(next_publishing_id),
                 closed: AtomicBool::new(false),
             },
             Confirms { outcomes: rx },

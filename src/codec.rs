@@ -17,6 +17,13 @@ impl Encode for &str {
     }
 }
 
+impl Encode for Bytes {
+    fn encode(&self, buf: &mut impl BufMut) {
+        buf.put_u32(self.len() as u32);
+        buf.put_slice(self);
+    }
+}
+
 impl<T: Encode> Encode for &[T] {
     fn encode(&self, buf: &mut impl BufMut) {
         buf.put_u32(self.len().try_into().unwrap());
