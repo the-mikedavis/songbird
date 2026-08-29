@@ -16,9 +16,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::{
     PublishOutcome,
     codec::{Decode, DecodeError, Encode, Reader},
-    commands::{
-        self, Command, CommandKey, Notification, Reference, Request, ResponseCode, Status as _,
-    },
+    commands::{self, Command, CommandKey, Notification, Reference, Request, ResponseCode, Status},
 };
 
 #[derive(Debug)]
@@ -252,7 +250,22 @@ impl Connection {
         Ok(buf.freeze())
     }
 
+    // Same as call_raw but checks the response code.
     async fn call<R>(&self, request: R) -> Result<R::Response, Error>
+    where
+        R: Request + Encode,
+        R::Response: Decode + Status + Send + 'static,
+    {
+        self.call_raw(request)
+            .await?
+            .into_result()
+            .map_err(|code| Error::Refused {
+                command: R::KEY,
+                code,
+            })
+    }
+
+    async fn call_raw<R>(&self, request: R) -> Result<R::Response, Error>
     where
         R: Request + Encode,
         R::Response: Decode + Send + 'static,
@@ -303,11 +316,9 @@ impl Connection {
         reference: &Reference,
         stream: &str,
     ) -> Result<u64, Error> {
-        let response = self
-            .call(commands::QueryPublisherSequence { reference, stream })
-            .await?;
-        check(commands::QueryPublisherSequence::KEY, response.code)?;
-        Ok(response.sequence)
+        self.call(commands::QueryPublisherSequence { reference, stream })
+            .await
+            .map(|resp| resp.sequence)
     }
 
     pub async fn declare_publisher(
@@ -347,6 +358,27 @@ impl Connection {
             outcomes,
             next_publishing_id: AtomicU64::new(next_publishing_id),
         })
+    }
+
+    pub async fn exchange_command_versions(&self) -> Result<Vec<commands::CommandVersion>, Error> {
+        self.call(commands::ExchangeCommandVersions {
+            // Extra versions supported in this client. Commands with only
+            // one version are not necessary to exchange.
+            commands: &[
+                commands::CommandVersion {
+                    key: CommandKey::PUBLISH,
+                    min_version: 1,
+                    max_version: commands::PublishV2::VERSION,
+                },
+                commands::CommandVersion {
+                    key: CommandKey::DELIVER,
+                    min_version: 1,
+                    max_version: commands::DeliverV2::VERSION,
+                },
+            ],
+        })
+        .await
+        .map(|resp| resp.commands)
     }
 }
 

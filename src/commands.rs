@@ -1271,13 +1271,13 @@ pub struct ConsumerUpdateResponse {
 // ExchangeCommandVersions
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CommandVersions {
+pub struct CommandVersion {
     pub key: CommandKey,
     pub min_version: u16,
     pub max_version: u16,
 }
 
-impl Encode for CommandVersions {
+impl Encode for CommandVersion {
     fn encode(&self, buf: &mut impl BufMut) {
         self.key.encode(buf);
         buf.put_u16(self.min_version);
@@ -1285,7 +1285,7 @@ impl Encode for CommandVersions {
     }
 }
 
-impl Decode for CommandVersions {
+impl Decode for CommandVersion {
     fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
         Ok(Self {
             key: reader.decode()?,
@@ -1296,7 +1296,7 @@ impl Decode for CommandVersions {
 }
 
 pub struct ExchangeCommandVersions<'a> {
-    pub commands: &'a [CommandVersions],
+    pub commands: &'a [CommandVersion],
 }
 
 impl Command for ExchangeCommandVersions<'_> {
@@ -1305,7 +1305,7 @@ impl Command for ExchangeCommandVersions<'_> {
 
 pub struct ExchangeCommandVersionsResponse {
     pub code: ResponseCode,
-    pub commands: Vec<CommandVersions>,
+    pub commands: Vec<CommandVersion>,
 }
 
 impl Status for ExchangeCommandVersionsResponse {
