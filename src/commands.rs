@@ -9,7 +9,7 @@ use std::{
 use bytes::{BufMut, Bytes};
 
 use crate::{
-    PublisherId, PublishingId, Reference, SubscriptionId,
+    ChunkId, Offset, PublisherId, PublishingId, Reference, SubscriptionId,
     codec::{Decode, DecodeError, Encode, Reader},
 };
 
@@ -178,19 +178,6 @@ impl Decode for CommandKey {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Offset(u64);
-
-impl Offset {
-    pub fn new(n: u64) -> Self {
-        Self(n)
-    }
-
-    pub fn get(&self) -> u64 {
-        self.0
-    }
-}
-
 impl Encode for Offset {
     fn encode(&self, buf: &mut impl BufMut) {
         buf.put_u64(self.0);
@@ -202,8 +189,6 @@ impl Decode for Offset {
         reader.decode().map(Self)
     }
 }
-
-pub type ChunkId = Offset;
 
 pub trait Command {
     const KEY: CommandKey;

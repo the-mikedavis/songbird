@@ -82,10 +82,7 @@ impl fmt::Display for DecodeError {
 
 impl DecodeError {
     pub fn is_recoverable(&self) -> bool {
-        match self {
-            Self::UnsupportedCompression(_) => true,
-            _ => false,
-        }
+        matches!(self, Self::UnsupportedCompression(_))
     }
 }
 

@@ -1,11 +1,29 @@
 pub(crate) mod codec;
 pub(crate) mod commands;
 pub(crate) mod connection;
+pub(crate) mod consumer;
+pub(crate) mod publisher;
 
 use std::{borrow::Borrow, fmt, ops::Deref, str::FromStr};
 
 pub use commands::ResponseCode;
-pub use connection::{Connection, Error, Publisher};
+pub use connection::{Connection, Error};
+pub use publisher::{Confirms, Publisher};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Offset(u64);
+
+impl Offset {
+    pub fn new(n: u64) -> Self {
+        Self(n)
+    }
+
+    pub fn get(&self) -> u64 {
+        self.0
+    }
+}
+
+pub type ChunkId = Offset;
 
 #[derive(Debug)]
 #[non_exhaustive]
