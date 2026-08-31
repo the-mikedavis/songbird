@@ -229,6 +229,10 @@ pub struct Confirms {
 }
 
 impl Publisher {
+    pub fn id(&self) -> PublisherId {
+        self.id
+    }
+
     pub async fn send(&self, body: Bytes) -> Result<PublishingId, Error> {
         let mut next = self.next_publishing_id.lock().await;
         let id = *next;
@@ -439,7 +443,7 @@ impl Connection {
     ) -> Result<(Publisher, Confirms), Error> {
         let next_publishing_id = match &reference {
             Some(reference) => self.query_publisher_sequence(reference, stream).await? + 1,
-            None => 0,
+            None => 1,
         };
 
         let (tx, rx) = mpsc::unbounded_channel();
