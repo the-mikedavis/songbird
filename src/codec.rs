@@ -4,6 +4,8 @@ use std::fmt;
 
 use bytes::{BufMut, Bytes};
 
+use crate::commands::Compression;
+
 // Encode
 
 pub trait Encode {
@@ -58,6 +60,8 @@ pub enum DecodeError {
     TrailingBytes,
     /// Any other kind of error.
     Custom(Box<dyn std::error::Error>),
+    /// The selected compression is not available.
+    UnsupportedCompression(Compression),
 }
 
 impl fmt::Display for DecodeError {
@@ -68,7 +72,19 @@ impl fmt::Display for DecodeError {
             Self::NotUtf8 => f.write_str("frame contained a non-UTF8 string"),
             Self::UnexpectedNull => f.write_str("frame contained an unexpected null size"),
             Self::TrailingBytes => f.write_str("unexpected trailing bytes in frame"),
+            Self::UnsupportedCompression(c) => {
+                f.write_fmt(format_args!("unsupported compression format {c:?}"))
+            }
             Self::Custom(_err) => todo!(),
+        }
+    }
+}
+
+impl DecodeError {
+    pub fn is_recoverable(&self) -> bool {
+        match self {
+            Self::UnsupportedCompression(_) => true,
+            _ => false,
         }
     }
 }

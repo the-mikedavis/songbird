@@ -179,7 +179,17 @@ impl Decode for CommandKey {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Offset(pub u64);
+pub struct Offset(u64);
+
+impl Offset {
+    pub fn new(n: u64) -> Self {
+        Self(n)
+    }
+
+    pub fn get(&self) -> u64 {
+        self.0
+    }
+}
 
 impl Encode for Offset {
     fn encode(&self, buf: &mut impl BufMut) {
@@ -558,6 +568,7 @@ impl Decode for ChunkType {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Chunk {
     /// First offset of the most recently committed chunk.
     /// Always absent when the chunk comes from deliver v1, always present with v2.
@@ -569,7 +580,7 @@ pub struct Chunk {
     pub epoch: u64,
     pub first_offset: Offset,
     pub crc: u32,
-    data: Bytes, // the entries, zero-copy
+    pub(crate) data: Bytes, // the entries, zero-copy
 }
 
 impl Decode for Chunk {
@@ -591,7 +602,10 @@ impl Decode for Chunk {
         reader.skip(3)?; // reserved
 
         let data = reader.bytes_of(data_length)?;
-        reader.skip(trailer_length as usize)?;
+        // The trailer is present if the subscription uses the 'all' chunk selector.
+        if !reader.is_empty() {
+            reader.skip(trailer_length as usize)?;
+        }
 
         Ok(Chunk {
             committed_chunk_id: None, // set by DeliverV2
@@ -604,6 +618,30 @@ impl Decode for Chunk {
             crc,
             data,
         })
+    }
+}
+
+wire_code! {
+    pub struct Compression(u8);
+    (NONE, 0);
+    (GZIP, 1);
+    (SNAPPY, 2);
+    (LZ4, 3);
+    (ZSTD, 4);
+}
+
+impl Compression {
+    pub(crate) fn new(n: u8) -> Self {
+        Self(n)
+    }
+}
+
+impl fmt::Debug for Compression {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.raw_name() {
+            Some(name) => f.write_str(name),
+            None => write!(f, "Compression({:#x})", self.0),
+        }
     }
 }
 
