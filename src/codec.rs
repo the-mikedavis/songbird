@@ -140,6 +140,10 @@ impl<'a> Reader<'a> {
         Ok(head)
     }
 
+    pub fn skip(&mut self, n_bytes: usize) -> Result<(), DecodeError> {
+        self.take(n_bytes).map(|_| ())
+    }
+
     pub fn u8(&mut self) -> Result<u8, DecodeError> {
         Ok(self.take(1)?[0])
     }
@@ -182,7 +186,7 @@ impl<'a> Reader<'a> {
         std::str::from_utf8(self.take(len)?).map_err(|_| DecodeError::NotUtf8)
     }
 
-    fn bytes_of(&mut self, len: usize) -> Result<Bytes, DecodeError> {
+    pub fn bytes_of(&mut self, len: usize) -> Result<Bytes, DecodeError> {
         Ok(self.frame.slice_ref(self.take(len)?))
     }
 

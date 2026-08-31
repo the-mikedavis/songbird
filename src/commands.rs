@@ -539,26 +539,72 @@ impl Encode for Subscribe<'_> {
 
 // Deliver
 
-pub struct ChunkType(i8);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChunkType(u8);
 
 impl ChunkType {
     pub const USER: Self = Self(0);
     pub const TRACKING_DELTA: Self = Self(1);
     pub const TRACKING_SNAPSHOT: Self = Self(2);
+
+    pub const fn is_user(&self) -> bool {
+        self.0 == Self::USER.0
+    }
+}
+
+impl Decode for ChunkType {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self(reader.u8()?))
+    }
 }
 
 pub struct Chunk {
-    pub magic_version: i8,
+    /// First offset of the most recently committed chunk.
+    /// Always absent when the chunk comes from deliver v1, always present with v2.
+    pub committed_chunk_id: Option<ChunkId>,
     pub chunk_type: ChunkType,
-    // Should be consumed into the vec for messages - it's the length.
-    // pub num_entries: u16,
+    pub num_entries: u16,
     pub num_records: u32,
     pub timestamp: i64,
     pub epoch: u64,
-    pub chunk_first_offset: ChunkId,
-    pub crc: i32,
-    // This would need refinement in practice.
-    pub messages: Vec<u8>,
+    pub first_offset: Offset,
+    pub crc: u32,
+    data: Bytes, // the entries, zero-copy
+}
+
+impl Decode for Chunk {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let magic_version = reader.u8()?;
+        if magic_version >> 4 != 5 {
+            return Err(DecodeError::Malformed);
+        }
+        let chunk_type = reader.decode()?;
+        let num_entries = reader.u16()?;
+        let num_records = reader.u32()?;
+        let timestamp = reader.decode()?;
+        let epoch = reader.decode()?;
+        let first_offset = reader.decode()?;
+        let crc = reader.u32()?;
+        let data_length = reader.u32()? as usize;
+        let trailer_length = reader.u32()?; // present in the header, not on the wire
+        let _bloom_size = reader.u8()?; // ditto: skipped server-side
+        reader.skip(3)?; // reserved
+
+        let data = reader.bytes_of(data_length)?;
+        reader.skip(trailer_length as usize)?;
+
+        Ok(Chunk {
+            committed_chunk_id: None, // set by DeliverV2
+            chunk_type,
+            num_entries,
+            num_records,
+            timestamp,
+            epoch,
+            first_offset,
+            crc,
+            data,
+        })
+    }
 }
 
 pub struct Deliver {
