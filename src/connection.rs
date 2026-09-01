@@ -21,6 +21,7 @@ use tokio::{
         tcp::{OwnedReadHalf, OwnedWriteHalf},
     },
     sync::{mpsc, oneshot},
+    task::JoinHandle,
     time::{Instant, Interval, MissedTickBehavior, timeout},
 };
 use tokio_util::{
@@ -619,6 +620,8 @@ struct Shared {
 
     token: CancellationToken,
     closing: AtomicBool,
+
+    tasks: Mutex<Option<(JoinHandle<()>, JoinHandle<()>)>>,
 }
 
 impl Connection {
@@ -670,17 +673,20 @@ impl Connection {
             close_reason: Mutex::new(None),
             token: CancellationToken::new(),
             closing: AtomicBool::new(false),
+            tasks: Mutex::new(None),
         });
 
         let token = CancellationToken::new();
-        tokio::spawn(writer_task(
+        let writer_task = tokio::spawn(writer_task(
             writer,
             outbound_rx,
             replies_rx,
             Duration::from_secs(heartbeat as u64),
             token.clone(),
         ));
-        tokio::spawn(reader_task(reader, Arc::clone(&shared), replies_tx, token));
+        let reader_task = tokio::spawn(reader_task(reader, Arc::clone(&shared), replies_tx, token));
+
+        *shared.tasks.lock() = Some((reader_task, writer_task));
 
         Ok(Connection(Arc::new(ConnectionHandle { shared })))
     }
@@ -961,6 +967,12 @@ impl Connection {
             .await;
 
         self.0.token.cancel();
+
+        let handles = self.0.tasks.lock().take();
+        if let Some((reader, writer)) = handles {
+            let _ = reader.await;
+            let _ = writer.await;
+        }
 
         match result {
             Ok(response) => check(CommandKey::CLOSE, response.code()),
