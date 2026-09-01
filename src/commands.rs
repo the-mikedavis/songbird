@@ -628,6 +628,15 @@ impl Command for Deliver {
 
 impl Notification for Deliver {}
 
+impl Decode for Deliver {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            subscription_id: reader.decode()?,
+            chunk: reader.decode()?,
+        })
+    }
+}
+
 pub struct DeliverV2 {
     pub subscription_id: SubscriptionId,
     pub committed_chunk_id: ChunkId,
@@ -640,6 +649,16 @@ impl Command for DeliverV2 {
 }
 
 impl Notification for DeliverV2 {}
+
+impl Decode for DeliverV2 {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            subscription_id: reader.decode()?,
+            committed_chunk_id: reader.decode()?,
+            chunk: reader.decode()?,
+        })
+    }
+}
 
 // Credit
 

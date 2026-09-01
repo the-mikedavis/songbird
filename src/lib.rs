@@ -7,7 +7,7 @@ pub(crate) mod subscription;
 
 use std::{borrow::Borrow, fmt, ops::Deref, str::FromStr};
 
-pub use commands::ResponseCode;
+pub use commands::{PublishingError, ResponseCode};
 pub use connection::{Connection, Error};
 pub use publisher::{Confirms, Publisher};
 pub use subscription::{ChunkSelector, SubscribeOptions, Subscription, SubscriptionEvent};
@@ -128,12 +128,7 @@ pub type PublishingId = u64;
 // TODO: move to publisher module.
 pub enum PublishOutcome {
     Confirmed(Vec<PublishingId>),
-    Failed(Vec<PublishFailure>),
-}
-
-pub struct PublishFailure {
-    pub publishing_id: PublishingId,
-    pub code: ResponseCode,
+    Failed(Vec<PublishingError>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

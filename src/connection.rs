@@ -465,8 +465,8 @@ impl<I: From<u8> + Into<u8> + Copy, T> Table<I, T> {
         }
     }
 
-    fn get(&self, id: u8) -> Option<&T> {
-        self.slots[id as usize].as_ref().map(|e| &e.value)
+    fn get(&self, id: I) -> Option<&T> {
+        self.slots[id.into() as usize].as_ref().map(|e| &e.value)
     }
 
     pub fn insert(&mut self, stream: String, value: T) -> Option<I> {
@@ -1089,7 +1089,7 @@ async fn dispatch(
     frame: Bytes,
 ) -> Flow {
     let mut reader = Reader::new(&frame);
-    let (Ok(key), Ok(version)) = (reader.decode(), reader.u16()) else {
+    let (Ok(key), Ok(version)) = (CommandKey::decode(&mut reader), reader.u16()) else {
         return Flow::Continue;
     };
 
@@ -1115,18 +1115,14 @@ async fn dispatch(
         let Ok(id) = reader.u32() else {
             return Flow::Continue;
         };
-        match shared.correlations.lock().remove(&CorrelationId(id)) {
-            Some(tx) => {
-                let _ = tx.send(reader.remaining_bytes());
-            }
-            // Normal: a cancelled call removed its entry via CorrelationGuard.
-            None => (),
+        if let Some(tx) = shared.correlations.lock().remove(&CorrelationId(id)) {
+            let _ = tx.send(reader.remaining_bytes());
         }
         return Flow::Continue;
     }
 
     match key {
-        CommandKey::DELIVER => deliver(shared, version, &frame, &mut reader).await,
+        CommandKey::DELIVER => deliver(shared, version, &mut reader).await,
         CommandKey::PUBLISH_CONFIRM => publish_confirm(shared, &mut reader),
         CommandKey::PUBLISH_ERROR => publish_error(shared, &mut reader),
         // CommandKey::METADATA_UPDATE => metadata_update(shared, &mut reader),
@@ -1147,9 +1143,126 @@ fn teardown(shared: &Arc<Shared>, peer_close: Option<(ResponseCode, String)>) {
     for (_, slot) in shared.publishers.write().drain() {
         slot.tracker.abandon();
     }
-    // for (_, slot) in shared.subscriptions.write().drain() {
-    //     let _ = slot.events.try_send(SubscriptionEvent::Unavailable(
-    //         ResponseCode::STREAM_NOT_AVAILABLE,
-    //     ));
-    // }
+    for (_, slot) in shared.subscriptions.write().drain() {
+        let _ = slot.events.try_send(SubscriptionEvent::Unavailable(
+            ResponseCode::STREAM_NOT_AVAILABLE,
+        ));
+    }
+}
+
+// Server->client command handlers
+
+async fn deliver(shared: &Arc<Shared>, version: u16, reader: &mut Reader<'_>) {
+    let (id, chunk) = match version {
+        1 => match commands::Deliver::decode(reader) {
+            Ok(d) => (d.subscription_id, d.chunk),
+            Err(_) => return,
+        },
+        2 => match commands::DeliverV2::decode(reader) {
+            Ok(d) => (d.subscription_id, d.chunk),
+            Err(_) => return,
+        },
+        _unknown_version => return,
+    };
+
+    // Clone the sender out from under the lock; the send below awaits.
+    let sender = shared
+        .subscriptions
+        .read()
+        .get(id)
+        .map(|slot| slot.events.clone());
+
+    if let Some(tx) = sender
+        && tx.send(SubscriptionEvent::Chunk(chunk)).await.is_err()
+    {
+        // error logging
+    }
+}
+
+async fn credit_refused(shared: &Arc<Shared>, reader: &mut Reader<'_>) {
+    let Ok(cmd) = commands::CreditResponse::decode(reader) else {
+        return;
+    };
+    let sender = shared
+        .subscriptions
+        .read()
+        .get(cmd.subscription_id)
+        .map(|slot| slot.events.clone());
+    if let Some(tx) = sender
+        && tx
+            .send(SubscriptionEvent::CreditRefused(cmd.code))
+            .await
+            .is_err()
+    {
+        // error logging
+    }
+}
+
+fn publish_confirm(shared: &Arc<Shared>, reader: &mut Reader<'_>) {
+    let Ok(cmd) = commands::PublishConfirm::decode(reader) else {
+        return;
+    };
+    let sender = shared
+        .publishers
+        .read()
+        .get(cmd.publisher_id)
+        .map(|slot| slot.outcomes.clone());
+    if let Some(tx) = sender
+        && tx
+            .send(PublishOutcome::Confirmed(cmd.publishing_ids))
+            .is_err()
+    {
+        // error logging
+    }
+}
+
+fn publish_error(shared: &Arc<Shared>, reader: &mut Reader<'_>) {
+    let Ok(cmd) = commands::PublishError::decode(reader) else {
+        return;
+    };
+    let sender = shared
+        .publishers
+        .read()
+        .get(cmd.publisher_id)
+        .map(|slot| slot.outcomes.clone());
+    if let Some(tx) = sender
+        && tx.send(PublishOutcome::Failed(cmd.errors)).is_err()
+    {
+        // error logging
+    }
+}
+
+fn read_close(r: &mut Reader<'_>) -> Result<(CorrelationId, ResponseCode, String), DecodeError> {
+    let correlation = CorrelationId(r.u32()?);
+    let code = ResponseCode::from(r.u16()?);
+    let reason = r.str()?.to_owned();
+    Ok((correlation, code, reason))
+}
+
+fn handle_peer_close(
+    shared: &Arc<Shared>,
+    replies: &mpsc::UnboundedSender<Bytes>,
+    reader: &mut Reader<'_>,
+) -> Flow {
+    let (correlation, code, reason) = match read_close(reader) {
+        Ok(parts) => parts,
+        Err(_e) => {
+            // log malformed close
+            return Flow::Stop(None);
+        }
+    };
+
+    if let Ok(frame) = encode_response(
+        &commands::Close {
+            code: ResponseCode::OK,
+            // TODO: is this optional?
+            reason: "".into(),
+        },
+        Some(correlation),
+        shared.frame_max,
+    ) {
+        let _ = replies.send(frame);
+    }
+
+    Flow::Stop(Some((code, reason)))
 }
