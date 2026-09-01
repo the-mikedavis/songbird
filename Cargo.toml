@@ -6,4 +6,6 @@ edition = "2024"
 [dependencies]
 bytes = "1"
 parking_lot = "0.12"
-tokio = { version = "1", features = ["sync", "rt"] }
+tokio = { version = "1", features = ["sync", "rt", "net", "time", "macros"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }

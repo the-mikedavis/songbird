@@ -203,6 +203,10 @@ impl<'a> Reader<'a> {
         Ok(self.frame.slice_ref(self.take(len)?))
     }
 
+    pub fn remaining_bytes(&mut self) -> Bytes {
+        self.frame.slice_ref(self.rest)
+    }
+
     /// "string": int16 length then UTF-8 content.
     pub fn str(&mut self) -> Result<&'a str, DecodeError> {
         let len = self.len16()?.ok_or(DecodeError::UnexpectedNull)?;

@@ -27,7 +27,7 @@ impl PublishTracker {
         }
     }
 
-    fn abandon(&self) {
+    pub(crate) fn abandon(&self) {
         self.outstanding.store(0, Ordering::Release);
         self.drained.notify_waiters();
     }

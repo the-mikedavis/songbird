@@ -1,10 +1,6 @@
 #![allow(dead_code)]
 
-use std::{
-    borrow::Cow,
-    fmt,
-    num::{NonZeroU16, NonZeroU32},
-};
+use std::{borrow::Cow, fmt, num::NonZeroU16};
 
 use bytes::{BufMut, Bytes};
 
@@ -997,7 +993,7 @@ impl Command for SaslHandshake {
 
 pub struct SaslHandshakeResponse {
     pub code: ResponseCode,
-    pub mechanisms: Vec<String>,
+    pub mechanisms: Vec<Mechanism>,
 }
 
 impl Status for SaslHandshakeResponse {
@@ -1026,17 +1022,40 @@ impl Decode for SaslHandshakeResponse {
 
 // SaslAuthenticate
 
-pub struct Mechanism<'a>(pub &'a str);
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mechanism(Cow<'static, str>);
 
-impl Mechanism<'_> {
-    pub const PLAIN: Self = Self("PLAIN");
-    pub const EXTERNAL: Self = Self("EXTERNAL");
-    pub const ANONYMOUS: Self = Self("ANONYMOUS");
+impl Mechanism {
+    pub const PLAIN: Self = Self(Cow::Borrowed("PLAIN"));
+    pub const EXTERNAL: Self = Self(Cow::Borrowed("EXTERNAL"));
+    pub const ANONYMOUS: Self = Self(Cow::Borrowed("ANONYMOUS"));
+
+    pub fn as_str(&self) -> &str {
+        self.0.as_ref()
+    }
+}
+
+impl From<String> for Mechanism {
+    fn from(value: String) -> Self {
+        Self(Cow::Owned(value))
+    }
+}
+
+impl Encode for Mechanism {
+    fn encode(&self, buf: &mut impl BufMut) {
+        self.0.as_ref().encode(buf);
+    }
+}
+
+impl Decode for Mechanism {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self(Cow::Owned(reader.str()?.to_owned())))
+    }
 }
 
 pub struct SaslAuthenticate<'a> {
-    pub mechanism: Mechanism<'a>,
-    pub opaque_data: Option<&'a [u8]>,
+    pub mechanism: &'a Mechanism,
+    pub sasl_data: Option<&'a [u8]>,
 }
 
 impl Command for SaslAuthenticate<'_> {
@@ -1060,8 +1079,8 @@ impl Request for SaslAuthenticate<'_> {
 
 impl Encode for SaslAuthenticate<'_> {
     fn encode(&self, buf: &mut impl BufMut) {
-        self.mechanism.0.encode(buf);
-        match self.opaque_data.as_ref() {
+        self.mechanism.encode(buf);
+        match self.sasl_data.as_ref() {
             Some(data) => {
                 buf.put_u32(data.len() as u32);
                 buf.put_slice(data);
@@ -1087,9 +1106,9 @@ impl Decode for SaslAuthenticateResponse {
 
 pub struct Tune {
     /// In bytes, 0 (None) means no limit
-    pub frame_max: Option<NonZeroU32>,
+    pub frame_max: u32,
     /// In seconds, 0 (None) means no heartbeat
-    pub heartbeat: Option<NonZeroU32>,
+    pub heartbeat: u32,
 }
 
 impl Command for Tune {
@@ -1102,16 +1121,16 @@ impl Request for Tune {
 
 impl Encode for Tune {
     fn encode(&self, buf: &mut impl BufMut) {
-        buf.put_u32(self.frame_max.map(NonZeroU32::get).unwrap_or(0));
-        buf.put_u32(self.heartbeat.map(NonZeroU32::get).unwrap_or(0));
+        buf.put_u32(self.frame_max);
+        buf.put_u32(self.heartbeat);
     }
 }
 
 impl Decode for Tune {
     fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
         Ok(Self {
-            frame_max: NonZeroU32::new(reader.u32()?),
-            heartbeat: NonZeroU32::new(reader.u32()?),
+            frame_max: reader.u32()?,
+            heartbeat: reader.u32()?,
         })
     }
 }
