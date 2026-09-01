@@ -3,12 +3,14 @@ pub(crate) mod commands;
 pub(crate) mod connection;
 pub(crate) mod consumer;
 pub(crate) mod publisher;
+pub(crate) mod subscription;
 
 use std::{borrow::Borrow, fmt, ops::Deref, str::FromStr};
 
 pub use commands::ResponseCode;
 pub use connection::{Connection, Error};
 pub use publisher::{Confirms, Publisher};
+pub use subscription::{ChunkSelector, SubscribeOptions, Subscription, SubscriptionEvent};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Offset(u64);
@@ -24,6 +26,15 @@ impl Offset {
 }
 
 pub type ChunkId = Offset;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OffsetSpec {
+    First,
+    Last,
+    Next,
+    Offset(Offset),
+    Timestamp(i64),
+}
 
 #[derive(Debug)]
 #[non_exhaustive]
@@ -114,6 +125,7 @@ impl Deref for Reference {
 
 pub type PublishingId = u64;
 
+// TODO: move to publisher module.
 pub enum PublishOutcome {
     Confirmed(Vec<PublishingId>),
     Failed(Vec<PublishFailure>),

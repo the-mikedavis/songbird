@@ -33,6 +33,7 @@ impl PublishTracker {
     }
 }
 
+#[derive(Debug)]
 pub struct Confirms {
     outcomes: mpsc::UnboundedReceiver<PublishOutcome>,
 }

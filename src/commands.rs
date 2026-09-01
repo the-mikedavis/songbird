@@ -5,7 +5,7 @@ use std::{borrow::Cow, fmt, num::NonZeroU16};
 use bytes::{BufMut, Bytes};
 
 use crate::{
-    ChunkId, Offset, PublisherId, PublishingId, Reference, SubscriptionId,
+    ChunkId, Offset, OffsetSpec, PublisherId, PublishingId, Reference, SubscriptionId,
     codec::{Decode, DecodeError, Encode, Reader},
 };
 
@@ -467,16 +467,7 @@ impl Encode for DeletePublisher {
 
 // Subscribe
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OffsetSpecification {
-    First,
-    Last,
-    Next,
-    Offset(u64),
-    Timestamp(i64),
-}
-
-impl Encode for OffsetSpecification {
+impl Encode for OffsetSpec {
     fn encode(&self, buf: &mut impl BufMut) {
         match self {
             Self::First => buf.put_u16(1),
@@ -484,7 +475,7 @@ impl Encode for OffsetSpecification {
             Self::Next => buf.put_u16(3),
             Self::Offset(offset) => {
                 buf.put_u16(4);
-                buf.put_u64(*offset);
+                offset.encode(buf);
             }
             Self::Timestamp(ts) => {
                 buf.put_u16(5);
@@ -497,7 +488,7 @@ impl Encode for OffsetSpecification {
 pub struct Subscribe<'a> {
     pub subscription_id: SubscriptionId,
     pub stream: &'a str,
-    pub offset_specification: OffsetSpecification,
+    pub offset: OffsetSpec,
     pub credit: u16,
     // See supported properties in doc. Might make sense to have a stronger
     // type here.
@@ -516,7 +507,7 @@ impl Encode for Subscribe<'_> {
     fn encode(&self, buf: &mut impl BufMut) {
         self.subscription_id.encode(buf);
         self.stream.encode(buf);
-        self.offset_specification.encode(buf);
+        self.offset.encode(buf);
         buf.put_u16(self.credit);
         if !self.properties.is_empty() {
             buf.put_u32(self.properties.len() as u32);
@@ -1332,7 +1323,7 @@ impl Command for ConsumerUpdate {
 
 pub struct ConsumerUpdateResponse {
     pub code: ResponseCode,
-    pub offset_specification: Option<OffsetSpecification>,
+    pub offset_specification: Option<OffsetSpec>,
 }
 
 // ExchangeCommandVersions
@@ -1490,7 +1481,7 @@ impl Encode for DeleteSuperStream<'_> {
 
 pub struct ResolveOffsetSpec<'a> {
     pub stream: &'a str,
-    pub offset_specification: OffsetSpecification,
+    pub offset_specification: OffsetSpec,
     pub properties: &'a [(&'a str, &'a str)],
 }
 

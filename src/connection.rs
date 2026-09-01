@@ -28,10 +28,12 @@ use tokio_util::{
 };
 
 use crate::{
-    Confirms, PublishOutcome, Publisher, PublisherId, PublishingId, Reference,
+    Confirms, PublishOutcome, Publisher, PublisherId, PublishingId, Reference, SubscribeOptions,
+    SubscriptionEvent, SubscriptionId,
     codec::{Decode, DecodeError, Encode, Reader},
     commands::{self, Command, CommandKey, Mechanism, Notification, Request, ResponseCode, Status},
     publisher::PublishTracker,
+    subscription::Subscription,
 };
 
 const INITIAL_FRAME_MAX: u32 = 8192;
@@ -58,8 +60,6 @@ pub enum Error {
         reason: String,
     },
     Closed,
-    // #[error("no SASL mechanism in common; the server offers {offered:?}")]
-    // NoCommonMechanism { offered: Vec<String> },
     PublisherIdsExhausted,
     SubscriptionIdsExhausted,
     // #[error(transparent)]
@@ -548,13 +548,18 @@ struct PublisherSlot {
 }
 
 #[derive(Debug)]
+struct SubscriptionSlot {
+    events: mpsc::Sender<SubscriptionEvent>,
+}
+
+#[derive(Debug)]
 struct Shared {
     outbound: mpsc::Sender<Bytes>,
 
     correlations: Mutex<HashMap<CorrelationId, oneshot::Sender<Bytes>>>,
     next_correlation_id: AtomicU32,
     command_versions: Vec<commands::CommandVersion>,
-    // subscriptions: RwLock<Table<SubscriptionId, subscriptionSlot>>,
+    subscriptions: RwLock<Table<SubscriptionId, SubscriptionSlot>>,
     frame_max: u32,
     heartbeat: Duration,
     server_properties: HashMap<String, String>,
@@ -604,7 +609,7 @@ impl Connection {
             correlations: Mutex::new(HashMap::new()),
             next_correlation_id: AtomicU32::new(next_correlation_id),
             publishers: RwLock::new(Table::new()),
-            // subscriptions: RwLock::new(Table::new()),
+            subscriptions: RwLock::new(Table::new()),
             frame_max,
             heartbeat: Duration::from_secs(heartbeat as u64),
             server_properties,
@@ -781,6 +786,71 @@ impl Connection {
             ResponseCode::PUBLISHER_DOES_NOT_EXIST => Ok(false),
             code => Err(Error::Refused {
                 command: CommandKey::DELETE_PUBLISHER,
+                code,
+            }),
+        }
+    }
+
+    pub async fn subscribe(
+        &self,
+        stream: &str,
+        options: SubscribeOptions,
+    ) -> Result<Subscription, Error> {
+        let properties = options.to_properties();
+        let borrowed: Vec<(&str, &str)> = properties
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+
+        // At least the credit window, so the server's flow control bounds
+        // how far the reader can get ahead of the application.
+        let (tx, rx) = mpsc::channel(options.credit as usize * 2);
+
+        let id = self
+            .0
+            .subscriptions
+            .write()
+            .insert(stream.to_owned(), SubscriptionSlot { events: tx })
+            .ok_or(Error::SubscriptionIdsExhausted)?;
+        let slot = SlotGuard {
+            table: &self.0.subscriptions,
+            id,
+            committed: false,
+        };
+
+        let response = self
+            .call(commands::Subscribe {
+                subscription_id: id,
+                stream,
+                offset: options.offset,
+                credit: options.credit,
+                properties: &borrowed,
+            })
+            .await?;
+        check(CommandKey::SUBSCRIBE, response.code())?;
+
+        slot.commit();
+        Ok(Subscription::new(
+            self.clone(),
+            id,
+            stream.to_owned(),
+            rx,
+            options.credit,
+        ))
+    }
+
+    pub(crate) async fn unsubscribe(&self, id: SubscriptionId) -> Result<bool, Error> {
+        let result = self
+            .call(commands::Unsubscribe {
+                subscription_id: id,
+            })
+            .await;
+        self.0.subscriptions.write().remove(id);
+        match result?.code() {
+            c if c.is_ok() => Ok(true),
+            ResponseCode::SUBSCRIPTION_ID_DOES_NOT_EXIST => Ok(false),
+            code => Err(Error::Refused {
+                command: CommandKey::UNSUBSCRIBE,
                 code,
             }),
         }
@@ -1059,8 +1129,8 @@ async fn dispatch(
         CommandKey::DELIVER => deliver(shared, version, &frame, &mut reader).await,
         CommandKey::PUBLISH_CONFIRM => publish_confirm(shared, &mut reader),
         CommandKey::PUBLISH_ERROR => publish_error(shared, &mut reader),
-        CommandKey::METADATA_UPDATE => metadata_update(shared, &mut reader),
-        CommandKey::CONSUMER_UPDATE => consumer_update(shared, replies, &mut reader),
+        // CommandKey::METADATA_UPDATE => metadata_update(shared, &mut reader),
+        // CommandKey::CONSUMER_UPDATE => consumer_update(shared, replies, &mut reader),
         // Other commands...?
         _ => (),
     }
