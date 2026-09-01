@@ -987,6 +987,11 @@ async fn writer_task(
         wrote_since_tick = true;
     }
 
+    // Try to flush any pending frames, for example close responses.
+    while let Ok(frame) = replies.try_recv() {
+        let _ = writer.feed(frame).await;
+    }
+
     let _ = writer.close().await; // flushes, then shuts the write half
     token.cancel();
 }

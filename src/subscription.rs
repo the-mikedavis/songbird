@@ -5,7 +5,8 @@ use std::fmt;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    Connection, Error, OffsetSpec, Reference, ResponseCode, SubscriptionId, commands::Chunk,
+    Connection, Error, OffsetSpec, Reference, ResponseCode, SubscriptionId,
+    commands::{self, Chunk, CommandKey},
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -145,6 +146,55 @@ impl Subscription {
         }
         self.closed = true;
         self.connection.unsubscribe(self.id).await.map(|_| ())
+    }
+
+    pub async fn next(&mut self) -> Option<Result<Chunk, Error>> {
+        loop {
+            match self.events.recv().await? {
+                SubscriptionEvent::Chunk(chunk) => {
+                    self.outstanding = self.outstanding.saturating_sub(1);
+                    self.replenish().await;
+                    return Some(Ok(chunk));
+                }
+                SubscriptionEvent::CreditRefused(code) => {
+                    return Some(Err(Error::Refused {
+                        command: CommandKey::CREDIT,
+                        code,
+                    }));
+                }
+                // This comes from MetadataUpdate. The server already closed
+                // the subscription on its end.
+                SubscriptionEvent::Unavailable(code) => {
+                    self.closed = true;
+                    return Some(Err(Error::Refused {
+                        command: CommandKey::METADATA_UPDATE,
+                        code,
+                    }));
+                }
+                SubscriptionEvent::ConsumerUpdate { active, reply } => {
+                    let offset = self.on_update.as_ref().and_then(|handler| handler(active));
+                    let _ = reply.send(offset);
+                    continue;
+                }
+            }
+        }
+    }
+
+    async fn replenish(&mut self) {
+        if self.outstanding * 2 <= self.credit_target {
+            let top_up = self.credit_target - self.outstanding;
+            if self
+                .connection
+                .notify(commands::Credit {
+                    subscription_id: self.id,
+                    credit: top_up as i16,
+                })
+                .await
+                .is_ok()
+            {
+                self.outstanding += top_up;
+            }
+        }
     }
 }
 

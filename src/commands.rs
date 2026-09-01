@@ -665,12 +665,14 @@ impl Decode for DeliverV2 {
 pub struct Credit {
     pub subscription_id: SubscriptionId,
     /// The number of chunks that can be sent
-    pub credit: u16,
+    pub credit: i16,
 }
 
 impl Command for Credit {
     const KEY: CommandKey = CommandKey::CREDIT;
 }
+
+impl Notification for Credit {}
 
 /// NB: the server sent a response only in case of problem, e.g. crediting an unknown subscription.
 pub struct CreditResponse {
@@ -691,7 +693,7 @@ impl Request for Credit {
 impl Encode for Credit {
     fn encode(&self, buf: &mut impl BufMut) {
         self.subscription_id.encode(buf);
-        buf.put_u16(self.credit);
+        buf.put_i16(self.credit);
     }
 }
 
