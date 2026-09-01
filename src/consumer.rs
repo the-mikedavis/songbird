@@ -10,8 +10,8 @@ use crate::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
-    offset: Offset,
-    body: Bytes,
+    pub offset: Offset,
+    pub body: Bytes,
 }
 
 #[derive(Debug, Clone)]

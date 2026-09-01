@@ -4,9 +4,10 @@ use std::{
     collections::HashMap,
     fmt,
     marker::PhantomData,
+    ops::Deref,
     sync::{
         Arc,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     time::Duration,
 };
@@ -28,8 +29,8 @@ use tokio_util::{
 };
 
 use crate::{
-    Confirms, PublishOutcome, Publisher, PublisherId, PublishingId, Reference, SubscribeOptions,
-    SubscriptionEvent, SubscriptionId,
+    Confirms, PublishOutcome, Publisher, PublisherId, PublishingId, Reference, StreamOptions,
+    SubscribeOptions, SubscriptionEvent, SubscriptionId, ValidationError,
     codec::{Decode, DecodeError, Encode, Reader},
     commands::{self, Command, CommandKey, Mechanism, Notification, Request, ResponseCode, Status},
     publisher::PublishTracker,
@@ -62,8 +63,7 @@ pub enum Error {
     Closed,
     PublisherIdsExhausted,
     SubscriptionIdsExhausted,
-    // #[error(transparent)]
-    // Invalid(#[from] ValidationError),
+    Invalid(ValidationError),
     UnexpectedChallenge {
         mechanism: Mechanism,
     },
@@ -84,6 +84,12 @@ pub enum Error {
 impl From<std::io::Error> for Error {
     fn from(err: std::io::Error) -> Self {
         Self::Io(err)
+    }
+}
+
+impl From<ValidationError> for Error {
+    fn from(err: ValidationError) -> Self {
+        Self::Invalid(err)
     }
 }
 
@@ -110,6 +116,7 @@ impl fmt::Display for Error {
             Self::SubscriptionIdsExhausted => {
                 f.write_str("all 256 subscription ids on this connection are occupied")
             }
+            Self::Invalid(err) => f.write_fmt(format_args!("invalid: {err}")),
             Self::UnexpectedChallenge { mechanism } => f.write_fmt(format_args!(
                 "unexpected SASL challenge for mechanism {mechanism:?}"
             )),
@@ -141,6 +148,12 @@ impl Secret {
 
     fn expose(&self) -> &str {
         self.0.as_str()
+    }
+}
+
+impl From<String> for Secret {
+    fn from(value: String) -> Self {
+        Self(value)
     }
 }
 
@@ -204,6 +217,23 @@ pub struct ConnectionConfig {
     pub max_inbound_frame: u32,
     /// Default 64.
     pub outbound_capacity: usize,
+}
+
+impl Default for ConnectionConfig {
+    fn default() -> Self {
+        Self {
+            credentials: Credentials::Plain {
+                username: "guest".into(),
+                password: "guest".to_owned().into(),
+            },
+            virtual_host: "/".to_owned(),
+            client_properties: Vec::new(),
+            frame_max: 16777216,
+            heartbeat: None,
+            max_inbound_frame: 16777216,
+            outbound_capacity: 64,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -438,7 +468,25 @@ impl<'a> Handshake<'a> {
 }
 
 #[derive(Debug, Clone)]
-pub struct Connection(Arc<Shared>);
+pub struct Connection(Arc<ConnectionHandle>);
+
+#[derive(Debug)]
+struct ConnectionHandle {
+    shared: Arc<Shared>,
+}
+
+impl Deref for ConnectionHandle {
+    type Target = Shared;
+    fn deref(&self) -> &Shared {
+        &self.shared
+    }
+}
+
+impl Drop for ConnectionHandle {
+    fn drop(&mut self) {
+        self.shared.token.cancel();
+    }
+}
 
 #[derive(Debug)]
 struct TableEntry<T> {
@@ -563,10 +611,14 @@ struct Shared {
     frame_max: u32,
     heartbeat: Duration,
     server_properties: HashMap<String, String>,
+    // TODO: also a HashMap
     connection_properties: Vec<(String, String)>,
 
     publishers: RwLock<Table<PublisherId, PublisherSlot>>,
     close_reason: Mutex<Option<(ResponseCode, String)>>,
+
+    token: CancellationToken,
+    closing: AtomicBool,
 }
 
 impl Connection {
@@ -616,6 +668,8 @@ impl Connection {
             connection_properties,
             command_versions,
             close_reason: Mutex::new(None),
+            token: CancellationToken::new(),
+            closing: AtomicBool::new(false),
         });
 
         let token = CancellationToken::new();
@@ -628,7 +682,7 @@ impl Connection {
         ));
         tokio::spawn(reader_task(reader, Arc::clone(&shared), replies_tx, token));
 
-        Ok(Connection(shared))
+        Ok(Connection(Arc::new(ConnectionHandle { shared })))
     }
 
     fn next_correlation_id(&self) -> CorrelationId {
@@ -746,7 +800,7 @@ impl Connection {
                 stream.to_owned(),
                 PublisherSlot {
                     outcomes: tx,
-                    tracker: tracker.clone(),
+                    tracker: Arc::clone(&tracker),
                 },
             )
             .ok_or(Error::PublisherIdsExhausted)?;
@@ -853,6 +907,66 @@ impl Connection {
                 command: CommandKey::UNSUBSCRIBE,
                 code,
             }),
+        }
+    }
+
+    pub async fn create_stream(&self, name: &str, options: &StreamOptions) -> Result<bool, Error> {
+        validate_stream_name(name)?;
+
+        let arguments = options.to_arguments();
+        let arguments: Vec<_> = arguments
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        let response = self
+            .call_raw(commands::Create {
+                stream: name,
+                arguments: &arguments,
+            })
+            .await?;
+        match response.code() {
+            c if c.is_ok() => Ok(true),
+            ResponseCode::STREAM_ALREADY_EXISTS => Ok(false),
+            code => Err(Error::Refused {
+                command: CommandKey::CREATE,
+                code,
+            }),
+        }
+    }
+
+    pub async fn delete_stream(&self, name: &str) -> Result<bool, Error> {
+        validate_stream_name(name)?;
+
+        let resp = self.call(commands::Delete { stream: name }).await?;
+        match resp.code() {
+            c if c.is_ok() => Ok(true),
+            ResponseCode::STREAM_DOES_NOT_EXIST => Ok(false),
+            code => Err(Error::Refused {
+                command: CommandKey::DELETE,
+                code,
+            }),
+        }
+    }
+
+    pub async fn close(&self) -> Result<(), Error> {
+        if self.0.closing.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
+
+        let result = self
+            .call(commands::Close {
+                code: ResponseCode::OK,
+                reason: "".into(),
+            })
+            .await;
+
+        self.0.token.cancel();
+
+        match result {
+            Ok(response) => check(CommandKey::CLOSE, response.code()),
+            // The peer disconnecting under us is a successful close.
+            Err(Error::Closed) | Err(Error::ClosedByPeer { .. }) => Ok(()),
+            Err(e) => Err(e),
         }
     }
 }
@@ -1207,17 +1321,12 @@ fn publish_confirm(shared: &Arc<Shared>, reader: &mut Reader<'_>) {
     let Ok(cmd) = commands::PublishConfirm::decode(reader) else {
         return;
     };
-    let sender = shared
-        .publishers
-        .read()
-        .get(cmd.publisher_id)
-        .map(|slot| slot.outcomes.clone());
-    if let Some(tx) = sender
-        && tx
-            .send(PublishOutcome::Confirmed(cmd.publishing_ids))
-            .is_err()
-    {
-        // error logging
+
+    if let Some(slot) = shared.publishers.read().get(cmd.publisher_id) {
+        slot.tracker.resolved(cmd.publishing_ids.len() as u64);
+        let _ = slot
+            .outcomes
+            .send(PublishOutcome::Confirmed(cmd.publishing_ids));
     }
 }
 
@@ -1225,15 +1334,9 @@ fn publish_error(shared: &Arc<Shared>, reader: &mut Reader<'_>) {
     let Ok(cmd) = commands::PublishError::decode(reader) else {
         return;
     };
-    let sender = shared
-        .publishers
-        .read()
-        .get(cmd.publisher_id)
-        .map(|slot| slot.outcomes.clone());
-    if let Some(tx) = sender
-        && tx.send(PublishOutcome::Failed(cmd.errors)).is_err()
-    {
-        // error logging
+    if let Some(slot) = shared.publishers.read().get(cmd.publisher_id) {
+        slot.tracker.resolved(cmd.errors.len() as u64);
+        let _ = slot.outcomes.send(PublishOutcome::Failed(cmd.errors));
     }
 }
 
@@ -1270,4 +1373,19 @@ fn handle_peer_close(
     }
 
     Flow::Stop(Some((code, reason)))
+}
+
+fn validate_stream_name(name: &str) -> Result<(), ValidationError> {
+    if name.is_empty() {
+        return Err(ValidationError::Empty {
+            field: "stream name",
+        });
+    }
+    if name.starts_with("amq.") {
+        return Err(ValidationError::ReservedPrefix);
+    }
+    if name.contains(['\n', '\r']) {
+        return Err(ValidationError::ControlCharacters);
+    }
+    Ok(())
 }

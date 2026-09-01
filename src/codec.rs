@@ -29,6 +29,9 @@ impl Encode for Bytes {
 impl<T: Encode> Encode for &[T] {
     fn encode(&self, buf: &mut impl BufMut) {
         buf.put_u32(self.len().try_into().unwrap());
+        for item in self.iter() {
+            item.encode(buf);
+        }
     }
 }
 

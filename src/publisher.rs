@@ -21,9 +21,9 @@ impl PublishTracker {
         self.outstanding.fetch_add(n, Ordering::AcqRel);
     }
 
-    fn resolved(&self, n: u64) {
+    pub(crate) fn resolved(&self, n: u64) {
         if self.outstanding.fetch_sub(n, Ordering::AcqRel) == n {
-            self.drained.notify_waiters();
+            self.drained.notify_one();
         }
     }
 
@@ -41,6 +41,14 @@ pub struct Confirms {
 impl Confirms {
     pub(crate) fn new(outcomes: mpsc::UnboundedReceiver<PublishOutcome>) -> Self {
         Self { outcomes }
+    }
+
+    pub async fn recv(&mut self) -> Option<PublishOutcome> {
+        self.outcomes.recv().await
+    }
+
+    pub fn try_recv(&mut self) -> Option<PublishOutcome> {
+        self.outcomes.try_recv().ok()
     }
 }
 
@@ -116,10 +124,10 @@ impl Publisher {
             .await
             .inspect_err(|_| self.tracker.resolved(n))?;
         *next = first + n;
-        Ok((first + first..n).collect())
+        Ok((first..first + n).collect())
     }
 
-    async fn drain_outstanding(&self) {
+    pub async fn drain_outstanding(&self) {
         loop {
             // Create the future before checking, so a resolution between
             // the check and the await isn't missed.

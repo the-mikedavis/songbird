@@ -48,6 +48,7 @@ pub enum ValidationError {
         field: &'static str,
     },
     ReservedPrefix,
+    ControlCharacters,
 }
 
 impl fmt::Display for ValidationError {
@@ -58,6 +59,7 @@ impl fmt::Display for ValidationError {
             }
             Self::Empty { field } => f.write_fmt(format_args!("{field} must not be empty")),
             Self::ReservedPrefix => f.write_str("stream name cannot start with \"amq.\""),
+            Self::ControlCharacters => f.write_str("stream name cannot contain control characters"),
         }
     }
 }
@@ -158,5 +160,42 @@ impl From<u8> for SubscriptionId {
 impl From<SubscriptionId> for u8 {
     fn from(val: SubscriptionId) -> Self {
         val.0
+    }
+}
+
+#[derive(Default)]
+pub struct StreamOptions {
+    pub max_length_bytes: Option<u64>,
+    pub max_age: Option<String>, // duration string, e.g. "7D"
+    pub max_segment_size_bytes: Option<u64>,
+    pub initial_cluster_size: Option<u32>, // must be > 0
+    pub leader_locator: Option<String>,
+    pub filter_size_bytes: Option<u8>, // must be 16..=255
+    pub extra: Vec<(String, String)>,
+}
+
+impl StreamOptions {
+    pub(crate) fn to_arguments(&self) -> Vec<(String, String)> {
+        let mut args = Vec::new();
+        if let Some(v) = self.max_length_bytes {
+            args.push(("max-length-bytes".into(), v.to_string()));
+        }
+        if let Some(v) = &self.max_age {
+            args.push(("max-age".into(), v.clone()));
+        }
+        if let Some(v) = self.max_segment_size_bytes {
+            args.push(("stream-max-segment-size-bytes".into(), v.to_string()));
+        }
+        if let Some(v) = self.initial_cluster_size {
+            args.push(("initial-cluster-size".into(), v.to_string()));
+        }
+        if let Some(v) = &self.leader_locator {
+            args.push(("queue-leader-locator".into(), v.clone()));
+        }
+        if let Some(v) = self.filter_size_bytes {
+            args.push(("stream-filter-size-bytes".into(), v.to_string()));
+        }
+        args.extend(self.extra.iter().cloned());
+        args
     }
 }

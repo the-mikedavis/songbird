@@ -280,6 +280,7 @@ impl Encode for DeclarePublisher<'_> {
 
 // Publish
 
+#[derive(Debug)]
 pub struct PublishedMessage {
     pub id: PublishingId,
     pub body: Bytes,
@@ -292,6 +293,7 @@ impl Encode for PublishedMessage {
     }
 }
 
+#[derive(Debug)]
 pub struct Publish<'a> {
     pub publisher: PublisherId,
     pub messages: &'a [PublishedMessage],
@@ -369,6 +371,7 @@ impl Decode for PublishConfirm {
 
 // PublishError
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PublishingError {
     pub publishing_id: PublishingId,
     pub code: ResponseCode,
