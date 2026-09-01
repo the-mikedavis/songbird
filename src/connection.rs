@@ -30,8 +30,8 @@ use tokio_util::{
 };
 
 use crate::{
-    Confirms, PublishOutcome, Publisher, PublisherId, PublishingId, Reference, StreamOptions,
-    SubscribeOptions, SubscriptionEvent, SubscriptionId, ValidationError,
+    Confirms, Offset, PublishOutcome, Publisher, PublisherId, PublishingId, Reference,
+    StreamOptions, SubscribeOptions, SubscriptionEvent, SubscriptionId, ValidationError,
     codec::{Decode, DecodeError, Encode, Reader},
     commands::{self, Command, CommandKey, Mechanism, Notification, Request, ResponseCode, Status},
     publisher::PublishTracker,
@@ -949,6 +949,43 @@ impl Connection {
             ResponseCode::STREAM_DOES_NOT_EXIST => Ok(false),
             code => Err(Error::Refused {
                 command: CommandKey::DELETE,
+                code,
+            }),
+        }
+    }
+
+    /// Asks the server to associate the requested offset with the reference in the stream.
+    ///
+    /// Note that `Result::Ok` does not mean that the server successfully stored the offset.
+    /// This request to the server is asynchronous and does not notify on failure.
+    pub async fn store_offset(
+        &self,
+        reference: &Reference,
+        stream: &str,
+        offset: Offset,
+    ) -> Result<(), Error> {
+        self.notify(commands::StoreOffset {
+            reference,
+            stream,
+            offset,
+        })
+        .await
+    }
+
+    /// Queries the offset associated with the requested reference in the stream.
+    pub async fn query_offset(
+        &self,
+        reference: &Reference,
+        stream: &str,
+    ) -> Result<Option<Offset>, Error> {
+        let response = self
+            .call_raw(commands::QueryOffset { reference, stream })
+            .await?;
+        match response.code {
+            c if c.is_ok() => Ok(Some(response.offset)),
+            ResponseCode::NO_OFFSET => Ok(None),
+            code => Err(Error::Refused {
+                command: CommandKey::QUERY_OFFSET,
                 code,
             }),
         }

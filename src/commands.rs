@@ -734,7 +734,7 @@ impl Encode for StoreOffset<'_> {
 // QueryOffset
 
 pub struct QueryOffset<'a> {
-    pub reference: Reference,
+    pub reference: &'a Reference,
     pub stream: &'a str,
 }
 
