@@ -619,6 +619,7 @@ struct Shared {
     close_reason: Mutex<Option<(ResponseCode, String)>>,
 
     token: CancellationToken,
+    closed: CancellationToken,
     closing: AtomicBool,
 
     tasks: Mutex<Option<(JoinHandle<()>, JoinHandle<()>)>>,
@@ -673,6 +674,7 @@ impl Connection {
             close_reason: Mutex::new(None),
             token: CancellationToken::new(),
             closing: AtomicBool::new(false),
+            closed: CancellationToken::new(),
             tasks: Mutex::new(None),
         });
 
@@ -993,8 +995,13 @@ impl Connection {
 
     pub async fn close(&self) -> Result<(), Error> {
         if self.0.closing.swap(true, Ordering::AcqRel) {
+            // Await anyone else attempting to close. All attempts to close
+            // block until the reader/writer terminate.
+            self.0.closed.cancelled().await;
             return Ok(());
         }
+
+        let _guard = self.0.closed.clone().drop_guard();
 
         let result = self
             .call(commands::Close {
