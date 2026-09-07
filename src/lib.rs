@@ -9,7 +9,7 @@ use std::{borrow::Borrow, fmt, ops::Deref, str::FromStr};
 
 pub use commands::{PublishingError, ResponseCode};
 pub use connection::{Connection, Error};
-pub use publisher::{Confirms, Publisher};
+pub use publisher::{Confirms, PublishOutcome, Publisher, PublishingId};
 pub use subscription::{ChunkSelector, SubscribeOptions, Subscription, SubscriptionEvent};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -122,29 +122,6 @@ impl Deref for Reference {
     type Target = str;
     fn deref(&self) -> &str {
         &self.0
-    }
-}
-
-pub type PublishingId = u64;
-
-// TODO: move to publisher module.
-pub enum PublishOutcome {
-    Confirmed(Vec<PublishingId>),
-    Failed(Vec<PublishingError>),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct PublisherId(u8);
-
-impl From<u8> for PublisherId {
-    fn from(value: u8) -> Self {
-        Self(value)
-    }
-}
-
-impl From<PublisherId> for u8 {
-    fn from(val: PublisherId) -> Self {
-        val.0
     }
 }
 

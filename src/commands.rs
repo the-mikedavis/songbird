@@ -5,8 +5,9 @@ use std::{borrow::Cow, fmt, num::NonZeroU16};
 use bytes::{BufMut, Bytes};
 
 use crate::{
-    ChunkId, Offset, OffsetSpec, PublisherId, PublishingId, Reference, SubscriptionId,
+    ChunkId, Offset, OffsetSpec, PublishingId, Reference, SubscriptionId,
     codec::{Decode, DecodeError, Encode, Reader},
+    publisher::PublisherId,
 };
 
 macro_rules! wire_code {

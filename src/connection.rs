@@ -30,11 +30,11 @@ use tokio_util::{
 };
 
 use crate::{
-    Confirms, Offset, PublishOutcome, Publisher, PublisherId, PublishingId, Reference,
-    StreamOptions, SubscribeOptions, SubscriptionEvent, SubscriptionId, ValidationError,
+    Confirms, Offset, PublishOutcome, Publisher, PublishingId, Reference, StreamOptions,
+    SubscribeOptions, SubscriptionEvent, SubscriptionId, ValidationError,
     codec::{Decode, DecodeError, Encode, Reader},
     commands::{self, Command, CommandKey, Mechanism, Notification, Request, ResponseCode, Status},
-    publisher::PublishTracker,
+    publisher::{PublishTracker, PublisherId},
     subscription::Subscription,
 };
 
@@ -608,7 +608,6 @@ struct Shared {
     correlations: Mutex<HashMap<CorrelationId, oneshot::Sender<Bytes>>>,
     next_correlation_id: AtomicU32,
     command_versions: Vec<commands::CommandVersion>,
-    subscriptions: RwLock<Table<SubscriptionId, SubscriptionSlot>>,
     frame_max: u32,
     heartbeat: Duration,
     server_properties: HashMap<String, String>,
@@ -616,12 +615,12 @@ struct Shared {
     connection_properties: Vec<(String, String)>,
 
     publishers: RwLock<Table<PublisherId, PublisherSlot>>,
-    close_reason: Mutex<Option<(ResponseCode, String)>>,
+    subscriptions: RwLock<Table<SubscriptionId, SubscriptionSlot>>,
 
     token: CancellationToken,
     closed: CancellationToken,
     closing: AtomicBool,
-
+    close_reason: Mutex<Option<(ResponseCode, String)>>,
     tasks: Mutex<Option<(JoinHandle<()>, JoinHandle<()>)>>,
 }
 

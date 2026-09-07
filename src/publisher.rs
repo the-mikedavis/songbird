@@ -8,7 +8,38 @@ use std::sync::{
 use bytes::Bytes;
 use tokio::sync::{Mutex, Notify, mpsc};
 
-use crate::{Connection, Error, PublishOutcome, PublisherId, PublishingId, Reference, commands};
+use crate::{Connection, Error, PublishingError, Reference, commands};
+
+/// A unique, monotonically increasing ID attached to each publish attempt which the server
+/// uses to deduplicate attempts to publish the same underlying data.
+///
+/// The publishing ID should be derived from whatever source of data is being sent into the
+/// stream.
+pub type PublishingId = u64;
+
+pub enum PublishOutcome {
+    Confirmed(Vec<PublishingId>),
+    Failed(Vec<PublishingError>),
+}
+
+/// A unique ID of a publisher for a connection.
+///
+/// A connection can host up to 256 publishers. This type provides a unique identifier for
+/// publisher IDs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct PublisherId(pub u8);
+
+impl From<u8> for PublisherId {
+    fn from(value: u8) -> Self {
+        Self(value)
+    }
+}
+
+impl From<PublisherId> for u8 {
+    fn from(val: PublisherId) -> Self {
+        val.0
+    }
+}
 
 #[derive(Default, Debug)]
 pub(crate) struct PublishTracker {
@@ -83,7 +114,7 @@ impl Publisher {
         }
     }
 
-    pub fn id(&self) -> PublisherId {
+    pub(crate) fn id(&self) -> PublisherId {
         self.id
     }
 
