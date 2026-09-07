@@ -5,9 +5,25 @@ use std::fmt;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    Connection, Error, OffsetSpec, Reference, ResponseCode, SlotGeneration, SubscriptionId,
+    Connection, Error, OffsetSpec, Reference, ResponseCode, SlotGeneration,
     commands::{self, Chunk, CommandKey},
 };
+
+/// A unique identifier for a subscription.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SubscriptionId(pub u8);
+
+impl From<u8> for SubscriptionId {
+    fn from(value: u8) -> Self {
+        Self(value)
+    }
+}
+
+impl From<SubscriptionId> for u8 {
+    fn from(val: SubscriptionId) -> Self {
+        val.0
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ChunkSelector {

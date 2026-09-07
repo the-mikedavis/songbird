@@ -125,21 +125,6 @@ impl Deref for Reference {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SubscriptionId(u8);
-
-impl From<u8> for SubscriptionId {
-    fn from(value: u8) -> Self {
-        Self(value)
-    }
-}
-
-impl From<SubscriptionId> for u8 {
-    fn from(val: SubscriptionId) -> Self {
-        val.0
-    }
-}
-
 #[derive(Default)]
 pub struct StreamOptions {
     pub max_length_bytes: Option<u64>,

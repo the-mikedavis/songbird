@@ -31,11 +31,11 @@ use tokio_util::{
 
 use crate::{
     Confirms, Offset, PublishOutcome, Publisher, PublishingId, Reference, SlotGeneration,
-    StreamOptions, SubscribeOptions, SubscriptionEvent, SubscriptionId, ValidationError,
+    StreamOptions, SubscribeOptions, SubscriptionEvent, ValidationError,
     codec::{Decode, DecodeError, Encode, Reader},
     commands::{self, Command, CommandKey, Mechanism, Notification, Request, ResponseCode, Status},
     publisher::{PublishTracker, PublisherId},
-    subscription::Subscription,
+    subscription::{Subscription, SubscriptionId},
 };
 
 const INITIAL_FRAME_MAX: u32 = 8192;

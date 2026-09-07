@@ -5,9 +5,10 @@ use std::{borrow::Cow, fmt, num::NonZeroU16};
 use bytes::{BufMut, Bytes};
 
 use crate::{
-    ChunkId, Offset, OffsetSpec, PublishingId, Reference, SubscriptionId,
+    ChunkId, Offset, OffsetSpec, PublishingId, Reference,
     codec::{Decode, DecodeError, Encode, Reader},
     publisher::PublisherId,
+    subscription::SubscriptionId,
 };
 
 macro_rules! wire_code {
