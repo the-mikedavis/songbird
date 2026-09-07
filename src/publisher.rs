@@ -8,7 +8,7 @@ use std::sync::{
 use bytes::Bytes;
 use tokio::sync::{Mutex, Notify, mpsc};
 
-use crate::{Connection, Error, PublishingError, Reference, commands};
+use crate::{Connection, Error, PublishingError, Reference, SlotGeneration, commands};
 
 /// A unique, monotonically increasing ID attached to each publish attempt which the server
 /// uses to deduplicate attempts to publish the same underlying data.
@@ -87,6 +87,7 @@ impl Confirms {
 pub struct Publisher {
     connection: Connection,
     id: PublisherId,
+    generation: SlotGeneration,
     stream: String,
     reference: Option<Reference>,
     tracker: Arc<PublishTracker>,
@@ -98,6 +99,7 @@ impl Publisher {
     pub(crate) fn new(
         connection: Connection,
         id: PublisherId,
+        generation: SlotGeneration,
         stream: String,
         reference: Option<Reference>,
         tracker: Arc<PublishTracker>,
@@ -106,6 +108,7 @@ impl Publisher {
         Self {
             connection,
             id,
+            generation,
             stream,
             reference,
             tracker,
@@ -175,7 +178,9 @@ impl Publisher {
             return Ok(()); // already closed
         }
         self.drain_outstanding().await;
-        self.connection.delete_publisher(self.id).await?;
+        self.connection
+            .delete_publisher(self.id, self.generation)
+            .await?;
         Ok(())
     }
 }
@@ -188,8 +193,9 @@ impl Drop for Publisher {
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let connection = self.connection.clone();
             let id = self.id;
+            let generation = self.generation;
             handle.spawn(async move {
-                let _ = connection.delete_publisher(id).await;
+                let _ = connection.delete_publisher(id, generation).await;
             });
         }
     }

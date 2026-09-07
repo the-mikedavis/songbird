@@ -30,8 +30,8 @@ use tokio_util::{
 };
 
 use crate::{
-    Confirms, Offset, PublishOutcome, Publisher, PublishingId, Reference, StreamOptions,
-    SubscribeOptions, SubscriptionEvent, SubscriptionId, ValidationError,
+    Confirms, Offset, PublishOutcome, Publisher, PublishingId, Reference, SlotGeneration,
+    StreamOptions, SubscribeOptions, SubscriptionEvent, SubscriptionId, ValidationError,
     codec::{Decode, DecodeError, Encode, Reader},
     commands::{self, Command, CommandKey, Mechanism, Notification, Request, ResponseCode, Status},
     publisher::{PublishTracker, PublisherId},
@@ -490,17 +490,19 @@ impl Drop for ConnectionHandle {
 }
 
 #[derive(Debug)]
-struct TableEntry<T> {
+struct Slot<T> {
     stream: String,
     value: T,
+    generation: SlotGeneration,
 }
 
 #[derive(Debug)]
 struct Table<I, T> {
     // NOTE: always 256 slots.
-    slots: Box<[Option<TableEntry<T>>]>,
+    slots: Box<[Option<Slot<T>>]>,
     next: u8,
     len: u16,
+    next_generation: SlotGeneration,
     _id: PhantomData<I>,
 }
 
@@ -510,6 +512,7 @@ impl<I: From<u8> + Into<u8> + Copy, T> Table<I, T> {
             slots: (0..=u8::MAX).map(|_| None).collect(),
             next: 0,
             len: 0,
+            next_generation: 0,
             _id: PhantomData,
         }
     }
@@ -518,33 +521,39 @@ impl<I: From<u8> + Into<u8> + Copy, T> Table<I, T> {
         self.slots[id.into() as usize].as_ref().map(|e| &e.value)
     }
 
-    pub fn insert(&mut self, stream: String, value: T) -> Option<I> {
+    pub fn insert(&mut self, stream: String, value: T) -> Option<(I, SlotGeneration)> {
         let id = self.free_slot()?;
-        self.slots[id as usize] = Some(TableEntry { stream, value });
+        let generation = self.next_generation;
+        self.next_generation += 1;
+        self.slots[id as usize] = Some(Slot {
+            stream,
+            value,
+            generation,
+        });
         self.len += 1;
-        Some(id.into())
+        Some((id.into(), generation))
     }
 
-    pub fn remove(&mut self, id: I) -> Option<T> {
-        let taken = self.slots[id.into() as usize].take();
-        if taken.is_some() {
-            self.len -= 1;
+    pub fn remove(&mut self, id: I, generation: SlotGeneration) -> Option<T> {
+        match self.slots[id.into() as usize].take()? {
+            slot if slot.generation == generation => {
+                self.len -= 1;
+                Some(slot.value)
+            }
+            _ => None,
         }
-        taken.map(|e| e.value)
     }
 
     /// Everything registered against a stream, removed. For MetadataUpdate.
     pub fn drain_stream(&mut self, stream: &str) -> Vec<(I, T)> {
-        let ids: Vec<I> = self
-            .slots
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| s.as_ref().is_some_and(|e| e.stream == stream))
-            .map(|(i, _)| (i as u8).into())
-            .collect();
-        ids.into_iter()
-            .filter_map(|id| self.remove(id).map(|v| (id, v)))
-            .collect()
+        let mut drained = Vec::new();
+        for (i, slot) in self.slots.iter_mut().enumerate() {
+            if slot.as_ref().is_some_and(|s| s.stream == stream) {
+                self.len -= 1;
+                drained.push(((i as u8).into(), slot.take().unwrap().value));
+            }
+        }
+        drained
     }
 
     pub fn drain(&mut self) -> Vec<(I, T)> {
@@ -573,6 +582,7 @@ impl<I: From<u8> + Into<u8> + Copy, T> Table<I, T> {
 struct SlotGuard<'a, I: From<u8> + Into<u8> + Copy, T> {
     table: &'a RwLock<Table<I, T>>,
     id: I,
+    generation: SlotGeneration,
     committed: bool,
 }
 
@@ -585,7 +595,7 @@ impl<I: From<u8> + Into<u8> + Copy, T> SlotGuard<'_, I, T> {
 impl<I: From<u8> + Into<u8> + Copy, T> Drop for SlotGuard<'_, I, T> {
     fn drop(&mut self) {
         if !self.committed {
-            self.table.write().remove(self.id);
+            self.table.write().remove(self.id, self.generation);
         }
     }
 }
@@ -799,7 +809,7 @@ impl Connection {
 
         let (tx, rx) = mpsc::unbounded_channel();
         let tracker = Arc::new(PublishTracker::default());
-        let id = self
+        let (id, generation) = self
             .0
             .publishers
             .write()
@@ -814,6 +824,7 @@ impl Connection {
         let slot = SlotGuard {
             table: &self.0.publishers,
             id,
+            generation,
             committed: false,
         };
 
@@ -830,6 +841,7 @@ impl Connection {
             Publisher::new(
                 self.clone(),
                 id,
+                generation,
                 stream.to_owned(),
                 reference,
                 tracker,
@@ -839,9 +851,13 @@ impl Connection {
         ))
     }
 
-    pub(crate) async fn delete_publisher(&self, id: PublisherId) -> Result<bool, Error> {
+    pub(crate) async fn delete_publisher(
+        &self,
+        id: PublisherId,
+        generation: SlotGeneration,
+    ) -> Result<bool, Error> {
         let result = self.call_raw(commands::DeletePublisher { id }).await;
-        self.0.publishers.write().remove(id);
+        self.0.publishers.write().remove(id, generation);
         match result?.code() {
             c if c.is_ok() => Ok(true),
             ResponseCode::PUBLISHER_DOES_NOT_EXIST => Ok(false),
@@ -867,7 +883,7 @@ impl Connection {
         // how far the reader can get ahead of the application.
         let (tx, rx) = mpsc::channel(options.credit as usize * 2);
 
-        let id = self
+        let (id, generation) = self
             .0
             .subscriptions
             .write()
@@ -876,6 +892,7 @@ impl Connection {
         let slot = SlotGuard {
             table: &self.0.subscriptions,
             id,
+            generation,
             committed: false,
         };
 
@@ -894,19 +911,24 @@ impl Connection {
         Ok(Subscription::new(
             self.clone(),
             id,
+            generation,
             stream.to_owned(),
             rx,
             options.credit,
         ))
     }
 
-    pub(crate) async fn unsubscribe(&self, id: SubscriptionId) -> Result<bool, Error> {
+    pub(crate) async fn unsubscribe(
+        &self,
+        id: SubscriptionId,
+        generation: SlotGeneration,
+    ) -> Result<bool, Error> {
         let result = self
             .call(commands::Unsubscribe {
                 subscription_id: id,
             })
             .await;
-        self.0.subscriptions.write().remove(id);
+        self.0.subscriptions.write().remove(id, generation);
         match result?.code() {
             c if c.is_ok() => Ok(true),
             ResponseCode::SUBSCRIPTION_ID_DOES_NOT_EXIST => Ok(false),

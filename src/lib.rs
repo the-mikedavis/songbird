@@ -176,3 +176,11 @@ impl StreamOptions {
         args
     }
 }
+
+/// A monotonically increasing counter of the identify of the resident in a connection's
+/// publisher or subscription table slots.
+///
+/// This type exists to ensure that table slots are only removed if the resident is the same
+/// logical identity. Otherwise in rare races, a resident could be removed even if the publisher
+/// or subscription it belonged to was not the same.
+pub(crate) type SlotGeneration = usize;

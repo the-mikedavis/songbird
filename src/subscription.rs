@@ -5,7 +5,7 @@ use std::fmt;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    Connection, Error, OffsetSpec, Reference, ResponseCode, SubscriptionId,
+    Connection, Error, OffsetSpec, Reference, ResponseCode, SlotGeneration, SubscriptionId,
     commands::{self, Chunk, CommandKey},
 };
 
@@ -105,6 +105,7 @@ pub enum SubscriptionEvent {
 pub struct Subscription {
     connection: Connection,
     id: SubscriptionId,
+    generation: SlotGeneration,
     stream: String,
     events: mpsc::Receiver<SubscriptionEvent>,
     credit_target: u16,
@@ -123,6 +124,7 @@ impl Subscription {
     pub(crate) fn new(
         connection: Connection,
         id: SubscriptionId,
+        generation: SlotGeneration,
         stream: String,
         events: mpsc::Receiver<SubscriptionEvent>,
         credit_target: u16,
@@ -130,6 +132,7 @@ impl Subscription {
         Self {
             connection,
             id,
+            generation,
             stream,
             events,
             credit_target,
@@ -145,7 +148,10 @@ impl Subscription {
             return Ok(());
         }
         self.closed = true;
-        self.connection.unsubscribe(self.id).await.map(|_| ())
+        self.connection
+            .unsubscribe(self.id, self.generation)
+            .await
+            .map(|_| ())
     }
 
     pub async fn next(&mut self) -> Option<Result<Chunk, Error>> {
@@ -204,9 +210,11 @@ impl Drop for Subscription {
             return;
         }
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            let (connection, id) = (self.connection.clone(), self.id);
+            let connection = self.connection.clone();
+            let id = self.id;
+            let generation = self.generation;
             handle.spawn(async move {
-                let _ = connection.unsubscribe(id).await;
+                let _ = connection.unsubscribe(id, generation).await;
             });
         }
     }
