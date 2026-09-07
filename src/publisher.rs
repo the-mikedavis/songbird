@@ -83,6 +83,11 @@ impl Confirms {
     }
 }
 
+/// A sender of messages.
+///
+/// A publisher is a client-side configuration for sending messages to a single stream. This
+/// construct can be shared between threads when put behind an `Arc`. A publisher's main use is
+/// to ferry messages into a stream.
 #[derive(Debug)]
 pub struct Publisher {
     connection: Connection,

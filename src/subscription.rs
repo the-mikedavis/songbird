@@ -118,6 +118,16 @@ pub enum SubscriptionEvent {
     },
 }
 
+/// A reader of a single stream.
+///
+/// A subscription reads messages out of a single stream. Subscriptions are a single-consumer type
+/// of receiver, so they require `&mut Self` references unlike `Publisher`s which can be shared
+/// between threads.
+///
+/// A message delivered to a subscription does not represent a lock or acquisition of the message
+/// which is delivered. Stream consumers read messages independently. To ensure that multiple
+/// consumers do not read the same messages, provide a `Reference` when creating a subscription,
+/// utilizing the single-active-consumer (SAC) pattern.
 pub struct Subscription {
     connection: Connection,
     id: SubscriptionId,
@@ -132,7 +142,14 @@ pub struct Subscription {
 
 impl fmt::Debug for Subscription {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Subscription").finish()
+        f.debug_struct("Subscription")
+            .field("stream", &self.stream)
+            .field("id", &self.id)
+            .field("generation", &self.generation)
+            .field("credit_target", &self.credit_target)
+            .field("outstanding", &self.outstanding)
+            .field("closed", &self.closed)
+            .finish_non_exhaustive()
     }
 }
 

@@ -468,6 +468,12 @@ impl<'a> Handshake<'a> {
     }
 }
 
+/// A connection to the RabbitMQ streams protocol host.
+///
+/// The connection can host publishers and consumers, and also make ad-hoc queries like
+/// stream creation/deletion, storing and retrieving server-side-stored offsets, and more.
+/// The connection type does not perform any sort of discovery on its own. It represents a unique
+/// connection to a host.
 #[derive(Debug, Clone)]
 pub struct Connection(Arc<ConnectionHandle>);
 
